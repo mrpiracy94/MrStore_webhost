@@ -83,7 +83,7 @@ def run_tests():
     # Rootlesskit refuses an XDG_RUNTIME_DIR writable by other users.
     # GitHub-hosted CI permits sudo; NEVER do this on a production NAS.
     subprocess.run(['sudo', '-n', 'chown', '1000:1000', sock_dir], check=True)
-    os.chmod(sock_dir, 0o700)
+    subprocess.run(['sudo', '-n', 'chmod', '700', sock_dir], check=True)
     try:
         docker('run', '-d', '--privileged', '--name', ENGINE_NAME,
                '-v', f'{folder}:{folder}',
