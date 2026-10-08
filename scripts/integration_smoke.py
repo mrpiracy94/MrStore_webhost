@@ -2,7 +2,7 @@
 """End-to-end smoke test against an actual Docker daemon. Designed for GitHub Actions Ubuntu runners.
 
 Do not run this against a NAS with valuable containers or projects: this test creates
-four ephemeral ZimaWebHost containers and uses ports 9101-9104, 8484 (host 18484).
+four ephemeral MrStore_webhost containers and uses ports 9101-9104, 8484 (host 18484).
 """
 import http.client
 import json
@@ -15,6 +15,7 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 PANEL_NAME = 'mrstore-ci-panel'
+ENGINE_NAME = 'mrstore-ci-rootless-engine'
 
 
 def docker(*args, check=True):
@@ -54,61 +55,189 @@ def wait_for_panel(seconds=45):
     raise RuntimeError('Painel nao abriu a API HTTP em 45 segundos')
 
 
-def run_tests():
-    # The host path must also be visible to the Docker daemon outside the panel container.
-    with tempfile.TemporaryDirectory(prefix='mrstore_ci_') as folder:
-        data = Path(folder)
-        docker('run', '-d', '--name', PANEL_NAME, '-p', '127.0.0.1:18484:8484',
-               '-e', 'ADMIN_PASSWORD=ci-only-password-12345',
-               '-e', f'HOST_DATA_DIR={folder}',
-               '-e', 'SITE_BIND_IP=127.0.0.1',
-               '-e', 'HEALTH_ATTEMPTS=30',
-               '-v', '/var/run/docker.sock:/var/run/docker.sock',
-               '-v', f'{folder}:/data', 'mrstore_webhost:ci')
+def wait_for_rootless(sock_dir, seconds=100):
+    socket = str(Path(sock_dir) / 'docker.sock')
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        state = docker('inspect', '--format', '{{.State.Status}}', ENGINE_NAME, check=False)
+        if state.returncode == 0 and state.stdout.strip() == 'exited':
+            break
         try:
-            wait_for_panel()
-            code, _, set_cookie = request('POST', '/api/login', {'password':'ci-only-password-12345'})
-            assert code == 200, 'Login HTTP falhou'
-            cookie = set_cookie.split(';', 1)[0]
-            for i, kind in enumerate(('html', 'php', 'node', 'react'), 1):
-                slug = 'ci-' + kind
-                code, body, _ = request('POST', '/api/sites', {'slug':slug,'name':'CI '+kind, 'kind':kind}, cookie)
-                assert code == 201, (kind, body)
-                archive = ROOT / 'examples/zips' / f'exemplo-{kind}.zip'
-                code, body, _ = request('POST', '/api/sites/' + slug + '/upload', cookie=cookie, binary=archive.read_bytes())
-                assert code == 200, (kind, body)
-                code, body, _ = request('POST', '/api/sites/' + slug + '/deploy', cookie=cookie)
-                assert code == 202, (kind, body)
-                until = time.monotonic() + 240
-                while time.monotonic() < until:
-                    code, body, _ = request('GET', '/api/sites', cookie=cookie)
-                    site = next(s for s in body['sites'] if s['slug'] == slug)
-                    if site.get('last_error'):
-                        raise AssertionError(f"{kind} deploy failed: {site['last_error']}")
-                    if site.get('active_release') and site['status'] == 'online':
-                        break
-                    time.sleep(2)
-                else:
-                    raise AssertionError(f'{kind} deploy exceeded 240 seconds')
-                con = http.client.HTTPConnection('127.0.0.1', 9100 + i, timeout=10)
-                con.request('GET', '/')
-                resp = con.getresponse()
-                body = resp.read()
-                assert 200 <= resp.status < 400 and body, (kind, resp.status, body[:250])
-                con.close()
-                print(f'{kind}: HTTP {resp.status}, {len(body)} bytes')
-                code, log, _ = request('GET', '/api/sites/' + slug + '/logs', cookie=cookie)
-                assert code == 200 and any(x['event'] == 'publicada' for x in log['events'])
-        finally:
-            for kind in ('html', 'php', 'node', 'react'):
-                docker('rm', '-f', 'zwh-ci-' + kind, check=False)
-                for suffix in ('-probe', '-next', '-prev'):
-                    docker('rm', '-f', 'zwh-ci-' + kind + suffix, check=False)
-            docker('rm', '-f', PANEL_NAME, check=False)
+            info = subprocess.run(['sudo', '-n', 'docker', '--host', 'unix://' + socket, 'info',
+                                   '--format', '{{json .SecurityOptions}}'],
+                                  capture_output=True, text=True, timeout=5)
+            if info.returncode == 0 and isinstance(json.loads(info.stdout), list) and 'name=rootless' in json.loads(info.stdout):
+                return
+        except (subprocess.SubprocessError, ValueError, OSError):
+            pass
+        time.sleep(2)
+    report = docker('logs', '--tail', '100', ENGINE_NAME, check=False)
+    state = docker('inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', ENGINE_NAME, check=False)
+    nested = docker('exec', ENGINE_NAME, 'sh', '-lc',
+                    'docker info --format \"{{json .SecurityOptions}}\" 2>&1; ls -la /run/user/1000; ps aux | tail -15',
+                    check=False)
+    raise RuntimeError('Docker rootless de teste nao iniciou/nao passou validacao de seguranca. '
+                       + ' state=' + state.stdout[-120:] + ' nested=' + (nested.stdout or nested.stderr)[-1800:]
+                       + ' logs=' + (report.stdout or report.stderr)[-20000:])
+
+
+def run_tests():
+    # CI isolation only: privileged outer DIND is an ephemeral GitHub runner fixture,
+    # NEVER part of the user's ZimaOS deployment. The panel accesses ONLY the
+    # inner, rootless daemon via a dedicated socket mount, never the system socket.
+    folder = tempfile.mkdtemp(prefix='mrstore_ci_')
+    sock_dir = tempfile.mkdtemp(prefix='mrstore_rootless_socket_')
+    os.chmod(folder, 0o777)
+    # Rootlesskit refuses an XDG_RUNTIME_DIR writable by other users.
+    # GitHub-hosted CI permits sudo; NEVER do this on a production NAS.
+    subprocess.run(['sudo', '-n', 'chown', '1000:1000', sock_dir], check=True)
+    subprocess.run(['sudo', '-n', 'chmod', '700', sock_dir], check=True)
+    try:
+        docker('run', '-d', '--privileged', '--name', ENGINE_NAME,
+               '-e', 'DOCKER_TLS_CERTDIR=',
+               '-v', f'{folder}:{folder}',
+               '-e', 'XDG_RUNTIME_DIR=/home/rootless/.docker/run',
+               '-e', 'DOCKER_HOST=unix:///home/rootless/.docker/run/docker.sock',
+               '-v', f'{sock_dir}:/home/rootless/.docker/run',
+               '-p', '127.0.0.1:9101:9101', '-p', '127.0.0.1:9102:9102',
+               '-p', '127.0.0.1:9103:9103', '-p', '127.0.0.1:9104:9104',
+               'docker:27-dind-rootless')
+        wait_for_rootless(sock_dir)
+        docker('run', '-d', '--name', PANEL_NAME, '--user', '1000:1000',
+               '-p', '127.0.0.1:18484:8484',
+               '-e', 'ADMIN_PASSWORD=ci-only-password-12345',
+               '-e', 'DOCKER_HOST=unix:///run/mrstore/docker.sock',
+               '-e', f'HOST_DATA_DIR={folder}',
+               '-e', 'SITE_BIND_IP=0.0.0.0',
+               '-e', 'HEALTH_ATTEMPTS=30',
+               '-v', f'{sock_dir}:/run/mrstore',
+               '-v', f'{folder}:/data', 'mrstore_webhost:ci')
+        wait_for_panel()
+        code, _, set_cookie = request('POST', '/api/login', {'password':'ci-only-password-12345'})
+        assert code == 200, 'Login HTTP falhou'
+        cookie = set_cookie.split(';', 1)[0]
+        for i, kind in enumerate(('html', 'php', 'node', 'react'), 1):
+            slug = 'ci-' + kind
+            code, body, _ = request('POST', '/api/sites', {'slug':slug,'name':'CI '+kind, 'kind':kind}, cookie)
+            assert code == 201, (kind, body)
+            archive = ROOT / 'examples/zips' / f'exemplo-{kind}.zip'
+            code, body, _ = request('POST', '/api/sites/' + slug + '/upload', cookie=cookie, binary=archive.read_bytes())
+            assert code == 200, (kind, body)
+            code, body, _ = request('POST', '/api/sites/' + slug + '/deploy', cookie=cookie)
+            assert code == 202, (kind, body)
+            until = time.monotonic() + 240
+            while time.monotonic() < until:
+                code, body, _ = request('GET', '/api/sites', cookie=cookie)
+                site = next(s for s in body['sites'] if s['slug'] == slug)
+                if site.get('last_error'):
+                    raise AssertionError(f"{kind} deploy failed: {site['last_error']}")
+                if site.get('active_release') and site['status'] == 'online':
+                    break
+                time.sleep(2)
+            else:
+                raise AssertionError(f'{kind} deploy exceeded 240 seconds')
+            con = http.client.HTTPConnection('127.0.0.1', 9100 + i, timeout=10)
+            con.request('GET', '/')
+            resp = con.getresponse()
+            body = resp.read()
+            assert 200 <= resp.status < 400 and body, (kind, resp.status, body[:250])
+            con.close()
+            print(f'{kind}: HTTP {resp.status}, {len(body)} bytes', flush=True)
+            code, log, _ = request('GET', '/api/sites/' + slug + '/logs', cookie=cookie)
+            assert code == 200 and any(x['event'] == 'publicada' for x in log['events'])
+
+        # Integration regression: a healthy update must change the live release.
+        code, overview, _ = request('GET', '/api/sites', cookie=cookie)
+        assert code == 200
+        previous = {x['slug']: x['active_release'] for x in overview['sites']}
+        mount_info = docker('inspect', '--format', '{{json .Mounts}}', PANEL_NAME)
+        mounts = json.loads(mount_info.stdout)
+        assert not any(x.get('Source') == '/var/run/docker.sock' for x in mounts), 'Administrative Docker socket exposed'
+        assert any(x.get('Destination') == '/run/mrstore' for x in mounts), 'Dedicated rootless socket missing'
+
+        marker = '<!doctype html><html><body><h1>mrstore-upgrade-e2e</h1></body></html>'
+        code, body, _ = request('POST', '/api/sites/ci-html/files',
+                                {'path': 'index.html', 'op': 'save', 'content': marker}, cookie)
+        assert code == 200, body
+        code, body, _ = request('POST', '/api/sites/ci-html/deploy', cookie=cookie)
+        assert code == 202, body
+        deadline = time.monotonic() + 150
+        while time.monotonic() < deadline:
+            _, overview, _ = request('GET', '/api/sites', cookie=cookie)
+            html = next(x for x in overview['sites'] if x['slug'] == 'ci-html')
+            if html.get('last_error'):
+                raise AssertionError('Healthy HTML update failed: ' + str(html['last_error']))
+            if html.get('active_release') != previous['ci-html'] and html['status'] == 'online':
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError('Healthy HTML update timed out')
+        con = http.client.HTTPConnection('127.0.0.1', 9101, timeout=10)
+        con.request('GET', '/')
+        response = con.getresponse()
+        assert response.status == 200 and b'mrstore-upgrade-e2e' in response.read()
+        con.close()
+        print('html-update: HTTP 200 with new release', flush=True)
+
+        # A PHP HTTP 500 MUST NOT replace the previously healthy site.
+        code, body, _ = request('POST', '/api/sites/ci-php/files',
+                                {'path': 'index.php', 'op': 'save',
+                                 'content': '<?php http_response_code(500); echo "unhealthy"; ?>'}, cookie)
+        assert code == 200, body
+        code, body, _ = request('POST', '/api/sites/ci-php/deploy', cookie=cookie)
+        assert code == 202, body
+        deadline = time.monotonic() + 150
+        while time.monotonic() < deadline:
+            _, overview, _ = request('GET', '/api/sites', cookie=cookie)
+            php = next(x for x in overview['sites'] if x['slug'] == 'ci-php')
+            if php.get('last_error'):
+                break
+            time.sleep(1)
+        else:
+            raise AssertionError('Unhealthy PHP release unexpectedly published or hung')
+        assert php['active_release'] == previous['ci-php'], 'Unhealthy PHP release replaced active release'
+        con = http.client.HTTPConnection('127.0.0.1', 9102, timeout=10)
+        con.request('GET', '/')
+        response = con.getresponse()
+        assert response.status == 200 and response.read(), 'PHP rollback lost the existing live site'
+        con.close()
+        print('php-failed-update: existing release stayed HTTP 200', flush=True)
+
+        # Rebooting the panel must preserve the independent daemon and its sites.
+        docker('restart', PANEL_NAME)
+        wait_for_panel()
+        code, _, set_cookie = request('POST', '/api/login',
+                                     {'password': 'ci-only-password-12345'})
+        assert code == 200 and set_cookie, 'Login after restart failed'
+        cookie = set_cookie.split(';', 1)[0]
+        code, overview, _ = request('GET', '/api/sites', cookie=cookie)
+        assert code == 200 and len(overview['sites']) == 4
+        assert next(x for x in overview['sites'] if x['slug'] == 'ci-html')['active_release'] == html['active_release']
+        for port in (9101, 9102, 9103, 9104):
+            con = http.client.HTTPConnection('127.0.0.1', port, timeout=10)
+            con.request('GET', '/')
+            response = con.getresponse()
+            assert response.status == 200 and response.read(), f'Site failed after panel restart: {port}'
+            con.close()
+        print('panel-restart: all 4 sites remain HTTP 200', flush=True)
+    finally:
+        # Cleanup must happen in the inner rootless engine, not the rootful host.
+        rootless_host = 'unix://' + str(Path(sock_dir) / 'docker.sock')
+        for kind in ('html', 'php', 'node', 'react'):
+            subprocess.run(['docker', '--host', rootless_host, 'rm', '-f', 'zwh-ci-' + kind],
+                           capture_output=True, check=False)
+            for suffix in ('-probe', '-next', '-prev'):
+                subprocess.run(['docker', '--host', rootless_host, 'rm', '-f', 'zwh-ci-' + kind + suffix],
+                               capture_output=True, check=False)
+        docker('rm', '-f', PANEL_NAME, check=False)
+        docker('rm', '-f', ENGINE_NAME, check=False)
+        # Privileged CI cleanup only; subordinate UID ownership can be opaque to runner.
+        for path in (folder, sock_dir):
+            subprocess.run(['sudo', '-n', 'rm', '-rf', '--', path], check=True)
 
 
 if __name__ == '__main__':
     if not shutil.which('docker'):
         raise SystemExit('Docker e obrigatorio para este teste de integracao.')
     run_tests()
-    print('4 testes de integracao Docker reais passaram')
+    print('4 tecnologias + update + failed deploy + panel restart passed')

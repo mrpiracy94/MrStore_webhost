@@ -1,10 +1,22 @@
-# MrStore_webhost v0.3 — Alojamento web para ZimaOS
+# MrStore_webhost v0.4 — Alojamento web para ZimaOS
 
 Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em contentores Docker independentes. Código disponível neste **repositório independente** (`mrpiracy94/MrStore_webhost`), sem dependências da MrStore.
 
-> **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. O acesso a `/var/run/docker.sock` concede privilégios administrativos sobre o host; **não exponhas o painel diretamente à Internet.**
+> **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. A v0.4 exige um daemon Docker rootless separado. **Não exponhas o painel diretamente à Internet.**
 
-## Novidades da v0.3
+## Alteração importante de segurança — Docker rootless obrigatório
+
+A v0.4 recusa a ligação ao Docker administrativo, incluindo o socket `/var/run/docker.sock`. Exige um **daemon Docker rootless dedicado**, com socket montado em `/run/mrstore/docker.sock` dentro do painel e validação `SecurityOptions: name=rootless` no arranque. O painel mantém o controlo dos contentores e ficheiros permitidos ao utilizador rootless, mas deixa de ter acesso administrativo ao daemon principal do ZimaOS.
+
+Lê [docs/ROOTLESS_SETUP.md](docs/ROOTLESS_SETUP.md) antes da atualização. O novo daemon não vê os contentores antigos: faz backup dos dados e republica os websites. A compatibilidade física com ZimaOS continua por comprovar.
+
+## Release candidate para instalação de teste no ZimaOS
+
+A branch `stabilization/rootless-ci-zimaos` constrói a imagem **`ghcr.io/mrpiracy94/mrstore_webhost:0.4.0-rc`** depois dos testes unitários e de integração Docker rootless terem sucesso. O manifesto `zimaos-compose.yml` desta branch aponta para essa candidata. **Só instala depois de verificar o job `image` e de confirmar que o pacote GHCR está publicamente acessível**. A versão `0.4.0` final só será publicada ao integrar na `main` após aceitação física.
+
+A integração automatizada testa as quatro tecnologias, uma atualização válida, a rejeição de uma atualização HTTP 500 e a sobrevivência dos websites após reinício do painel. Estes testes **não substituem** o teste no NAS após reinício do equipamento.
+
+## Novidades da v0.4
 
 - **HTTP readiness:** antes de parar o website antigo, inicia a nova release num contentor sem porta publicada e verifica HTTP internamente. Após a troca de portas, repete a verificação HTTP. Códigos 2xx/3xx são considerados prontos; uma rota `/` que devolva 404, 401 ou 500 é considerada falha. Para uma API sem rota `/`, cria uma rota inicial saudável.
 - **Recuperação:** mantém o contentor anterior até a nova versão responder, escreve um marcador persistente de publicação em `sites.json` e recupera publicações interrompidas no arranque do painel. Não é recuperação transacional para todo e qualquer cenário de falha, nem zero downtime.
@@ -15,8 +27,8 @@ Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em conten
 
 ## Instalar via Docker Compose (recomendado para primeiro teste)
 
-1. Faz download/clona este repositório num host com Docker e Compose. Confirma que a porta 8484 e 9101–9200 estão livres.
-2. Copia `.env.example` para `.env`, define `WEBHOST_ADMIN_PASSWORD` única de pelo menos 12 caracteres, confirma o valor absoluto de `WEBHOST_DATA_DIR` e, se fores usar acesso LAN, define **explicitamente** `WEBHOST_PANEL_BIND_IP` e `WEBHOST_SITE_BIND_IP` com o IP LAN do host.
+1. Configura primeiro um Docker rootless dedicado e confirma que o utilizador tem acesso ao diretório de dados. Consulta `docs/ROOTLESS_SETUP.md`. Confirma que a porta 8484 e 9101–9200 estão livres.
+2. Clona o repositório. Copia `.env.example` para `.env`, define uma `WEBHOST_ADMIN_PASSWORD` de pelo menos 12 caracteres, o caminho `WEBHOST_DATA_DIR`, `WEBHOST_ROOTLESS_SOCKET` e o UID/GID do utilizador rootless. Para a LAN, define **explicitamente** os IPs de bind.
 3. Executa `docker compose up -d --build` e consulta os logs com `docker compose logs -f`.
 4. Abre `http://127.0.0.1:8484` no próprio host (ou `http://IP_LAN:8484` se ativares acesso LAN). Usa uma VPN ou túnel SSH para acesso remoto.
 
@@ -24,13 +36,13 @@ Os websites criados terão portas 9101–9200, também associadas ao `WEBHOST_SI
 
 ## Instalar pelo importador do ZimaOS
 
-1. Abre as execuções do GitHub Actions e confirma que `CI and container release` terminou sem erros e publicou `ghcr.io/mrpiracy94/mrstore_webhost:0.3.0` para AMD64/ARM64.
+1. Abre as execuções do GitHub Actions e confirma que `CI and container release` terminou sem erros e publicou `ghcr.io/mrpiracy94/mrstore_webhost:0.4.0` para AMD64/ARM64.
 2. Confirma que o pacote GHCR está **público** (a publicação num repositório público não garante visibilidade pública automática do pacote). Se a imagem não puder ser descarregada anonimamente, utiliza a instalação por terminal/Compose.
-3. Edita `zimaos-compose.yml`: **substitui** `ADMIN_PASSWORD`, confirma a pasta `/DATA/AppData/MrStore_webhost/data`, as portas e o acesso LAN. Faz backup dos dados da v0.2 antes de atualizar.
+3. Configura o Docker rootless no ZimaOS (se suportado) e executa `sh scripts/zimaos_preflight.sh` como utilizador dedicado. Edita `zimaos-compose.yml`: substitui `ADMIN_PASSWORD`, o UID/GID, o caminho do socket rootless, as portas e o volume de dados. Faz backup antes de atualizar.
 4. Importa o ficheiro `zimaos-compose.yml` em **Aplicação personalizada → Importar Docker Compose**.
 5. Abre o painel em `http://IP_DO_ZIMAOS:8484` apenas na rede local de confiança.
 
-> Na v0.3 já não é necessário montar `/DATA/AppData/MrStore_webhost/app/`: a imagem publicada inclui os ficheiros Python e HTML. Preserva somente o volume persistente `/data`. **Não inicies duas versões a controlar os mesmos dados/contendores ao mesmo tempo.**
+> Na v0.4 já não é necessário montar `/DATA/AppData/MrStore_webhost/app/`: a imagem publicada inclui os ficheiros Python e HTML. Preserva somente o volume persistente `/data`. **Não inicies duas versões a controlar os mesmos dados/contendores ao mesmo tempo.**
 
 ## Testes
 
@@ -54,10 +66,10 @@ O smoke test real testa o painel e o deploy de quatro tecnologias nas portas 910
 | Node.js | `node:22-alpine` | `package.json` com `scripts.start`, `PORT=3000`, rota `/` responde com 2xx/3xx |
 
 - Só a página `/` é testada; autenticação, bases de dados e endpoints secundários precisam de testes específicos.
-- O painel ainda dispõe do socket Docker; isso mantém risco equivalente a permissões de administrador, apesar de `cap_drop`, `read_only` e a escuta local. Isolar o daemon num host dedicado ou introduzir um serviço de deployment com controlos restritivos exigirá trabalho adicional.
+- O painel controla um **daemon rootless dedicado**, não o Docker administrativo do NAS. Ainda pode controlar contentores e dados acessíveis ao utilizador rootless; não é seguro para múltiplos utilizadores não confiáveis.
 - PHP corre com um processo principal privilegiado, não há quotas globais de armazenamento, backups automáticos, monitorização contínua HTTP, nem isolamento multiutilizador forte.
 - Existem pequenas interrupções durante a substituição de portas; o rollback cobre falhas de HTTP no arranque e algumas interrupções da execução, mas não garante recuperação após todas as falhas de energia ou crashes posteriores.
 - O editor suporta UTF-8 até 1 MB; os ZIPs são limitados a 50 MB comprimidos, 150 MB descomprimidos e 2.500 ficheiros. Não implementa domínios, HTTPS automático nem MariaDB.
 - Antes de usar em servidores com websites importantes, valida todo o fluxo numa máquina Docker de teste e depois no ZimaOS.
 
-Ver `docs/AUDITORIA.md` e `docs/CHECKLIST_ZIMAOS.md` para informações adicionais sobre migração e segurança.
+Ver `docs/ROOTLESS_SETUP.md`, `docs/CHECKLIST_ZIMAOS.md` e `docs/ZIMAOS_ACCEPTANCE_RESULT.md` para migração, diagnóstico e aceitação física.

@@ -1,7 +1,7 @@
 name: CI and container release
 on:
   push:
-    branches: [main]
+    branches: [main, stabilization/rootless-ci-zimaos]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -19,9 +19,16 @@ jobs:
           node-version: '22'
       - name: Unit and HTTP tests
         run: python -m unittest discover -s tests -v
+      - name: ZimaOS preflight shell syntax and fail-closed behavior
+        run: |
+          sh -n scripts/zimaos_preflight.sh
+          if sh scripts/zimaos_preflight.sh; then
+            echo 'Expected preflight failure on an unconfigured CI runner' >&2
+            exit 1
+          fi
       - name: Python and JavaScript syntax
         run: |
-          python -m py_compile app/server.py
+          python -m py_compile app/server.py scripts/integration_smoke.py
           node --check examples/node/server.js
           python - <<'PY'
           from pathlib import Path
@@ -41,11 +48,23 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build local integration image
-        run: docker build --pull -t mrstore_webhost:ci .
+        run: |
+          docker build --pull -t mrstore_webhost:ci .
+          docker pull docker:27-dind-rootless
+      # Ubuntu 24.04 GitHub-hosted runner only: AppArmor's default unprivileged
+      # user namespace restriction can prevent the nested rootlesskit test fixture.
+      # This changes the ephemeral CI runner only. NEVER apply it on ZimaOS.
+      - name: Prepare ephemeral CI runner for rootless user namespaces
+        run: |
+          if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
       - name: Execute real Docker integration smoke tests
         run: python scripts/integration_smoke.py
   image:
-    if: github.event_name != 'pull_request'
+    # Candidate image is built on the stabilization branch only after test + integration succeed.
+    # Final version tag is published only from main.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stabilization/rootless-ci-zimaos')
     needs: [test, integration]
     runs-on: ubuntu-latest
     permissions:
@@ -67,4 +86,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/mrpiracy94/mrstore_webhost:0.3.0
+          tags: ${{ github.ref == 'refs/heads/main' && 'ghcr.io/mrpiracy94/mrstore_webhost:0.4.0' || 'ghcr.io/mrpiracy94/mrstore_webhost:0.4.0-rc' }}

@@ -447,3 +447,38 @@ class TestHTTP(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestRootlessBoundary(unittest.TestCase):
+    def test_rejects_unset_or_rootful_endpoint(self):
+        with patch.dict(os.environ, {'DOCKER_HOST': 'unix:///var/run/docker.sock'}):
+            with self.assertRaisesRegex(RuntimeError, 'DOCKER_HOST'):
+                web.verify_rootless_engine()
+
+    def test_rejects_missing_socket(self):
+        with patch.dict(os.environ, {'DOCKER_HOST': web.DOCKER_ENDPOINT}):
+            with patch.object(web.Path, 'is_socket', return_value=False):
+                with self.assertRaisesRegex(RuntimeError, 'Socket Docker rootless'):
+                    web.verify_rootless_engine()
+
+    def test_rejects_admin_daemon_even_on_custom_socket(self):
+        from unittest.mock import Mock
+        rootful = Mock(stdout=json.dumps(['name=seccomp,profile=default']))
+        with patch.dict(os.environ, {'DOCKER_HOST': web.DOCKER_ENDPOINT}):
+            with patch.object(web.Path, 'is_socket', return_value=True), patch.object(web.subprocess, 'run', return_value=rootful):
+                with self.assertRaisesRegex(RuntimeError, 'administrativo recusado'):
+                    web.verify_rootless_engine()
+
+    def test_accepts_rootless_daemon(self):
+        from unittest.mock import Mock
+        rootless = Mock(stdout=json.dumps(['name=seccomp,profile=default', 'name=rootless']))
+        with patch.dict(os.environ, {'DOCKER_HOST': web.DOCKER_ENDPOINT}):
+            with patch.object(web.Path, 'is_socket', return_value=True), patch.object(web.subprocess, 'run', return_value=rootless) as sub:
+                self.assertTrue(web.verify_rootless_engine())
+                self.assertEqual(sub.call_args.args[0][2], web.DOCKER_ENDPOINT)
+
+    def test_compose_never_mounts_rootful_socket(self):
+        for name in ('docker-compose.yml', 'zimaos-compose.yml'):
+            body = (ROOT / name).read_text()
+            self.assertNotIn('/var/run/docker.sock', body)
+            self.assertIn('/run/mrstore/docker.sock', body)
