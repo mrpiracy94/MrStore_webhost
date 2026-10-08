@@ -101,7 +101,7 @@ def run_tests():
                '-v', f'{sock_dir}:/home/rootless/.docker/run',
                '-p', '127.0.0.1:9101:9101', '-p', '127.0.0.1:9102:9102',
                '-p', '127.0.0.1:9103:9103', '-p', '127.0.0.1:9104:9104',
-               'docker:27-dind-rootless'
+               'docker:27-dind-rootless')
         wait_for_rootless(sock_dir)
         docker('run', '-d', '--name', PANEL_NAME, '--user', '1000:1000',
                '-p', '127.0.0.1:18484:8484',
