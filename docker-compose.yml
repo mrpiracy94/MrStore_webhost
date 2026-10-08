@@ -4,6 +4,7 @@ services:
     build: .
     image: mrstore_webhost:local
     container_name: mrstore_webhost-panel
+    user: "${WEBHOST_UID:-1000}:${WEBHOST_GID:-1000}"
     restart: unless-stopped
     ports:
       # Default local-only access. Set WEBHOST_PANEL_BIND_IP to a LAN interface consciously.
@@ -13,10 +14,11 @@ services:
       HOST_DATA_DIR: ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}
       SITE_BIND_IP: ${WEBHOST_SITE_BIND_IP:-127.0.0.1}
       PORT: "8484"
+      DOCKER_HOST: "unix:///run/mrstore/docker.sock"
       HEALTH_ATTEMPTS: "20"
     volumes:
-      # SECURITY: socket remains host-admin equivalent. Use only on trusted hosts.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Must be the socket of a DEDICATED ROOTLESS Docker daemon.
+      - ${WEBHOST_ROOTLESS_SOCKET:?Set_WEBHOST_ROOTLESS_SOCKET}:/run/mrstore/docker.sock
       - ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}:/data
     security_opt:
       - no-new-privileges:true
@@ -38,7 +40,7 @@ x-casaos:
     en_US: Manage HTML, PHP, React and Node websites
     pt_PT: Gere websites HTML, PHP, React e Node
   category: Developer
-  version: "0.3.0"
+  version: "0.4.0"
   architectures:
     - amd64
     - arm64

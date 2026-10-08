@@ -1,10 +1,21 @@
-# MrStore_webhost v0.3 — Alojamento web para ZimaOS
+# MrStore_webhost v0.4 — Alojamento web para ZimaOS
 
 Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em contentores Docker independentes. Código disponível neste **repositório independente** (`mrpiracy94/MrStore_webhost`), sem dependências da MrStore.
 
-> **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. O acesso a `/var/run/docker.sock` concede privilégios administrativos sobre o host; **não exponhas o painel diretamente à Internet.**
+> **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. A v0.4 exige um daemon Docker rootless separado. **Não exponhas o painel diretamente à Internet.**
 
-## Novidades da v0.3
+## Breaking security change — Docker rootless required
+
+Version 0.4 refuses to run with the administrative Docker daemon, including
+`/var/run/docker.sock` and any socket exposing a rootful daemon. Mount only the
+UNIX socket of a **dedicated rootless daemon** at `/run/mrstore/docker.sock`.
+Read `docs/ROOTLESS_SETUP.md` before updating from v0.3. Existing deployments
+cannot be transparently migrated: the new daemon has its own images and
+containers; back up data and republish the sites after migration.
+No production-level ZimaOS sign-off is claimed until the on-device checklist
+has been executed with evidence.
+
+## Novidades da v0.4
 
 - **HTTP readiness:** antes de parar o website antigo, inicia a nova release num contentor sem porta publicada e verifica HTTP internamente. Após a troca de portas, repete a verificação HTTP. Códigos 2xx/3xx são considerados prontos; uma rota `/` que devolva 404, 401 ou 500 é considerada falha. Para uma API sem rota `/`, cria uma rota inicial saudável.
 - **Recuperação:** mantém o contentor anterior até a nova versão responder, escreve um marcador persistente de publicação em `sites.json` e recupera publicações interrompidas no arranque do painel. Não é recuperação transacional para todo e qualquer cenário de falha, nem zero downtime.
@@ -24,13 +35,13 @@ Os websites criados terão portas 9101–9200, também associadas ao `WEBHOST_SI
 
 ## Instalar pelo importador do ZimaOS
 
-1. Abre as execuções do GitHub Actions e confirma que `CI and container release` terminou sem erros e publicou `ghcr.io/mrpiracy94/mrstore_webhost:0.3.0` para AMD64/ARM64.
+1. Abre as execuções do GitHub Actions e confirma que `CI and container release` terminou sem erros e publicou `ghcr.io/mrpiracy94/mrstore_webhost:0.4.0` para AMD64/ARM64.
 2. Confirma que o pacote GHCR está **público** (a publicação num repositório público não garante visibilidade pública automática do pacote). Se a imagem não puder ser descarregada anonimamente, utiliza a instalação por terminal/Compose.
 3. Edita `zimaos-compose.yml`: **substitui** `ADMIN_PASSWORD`, confirma a pasta `/DATA/AppData/MrStore_webhost/data`, as portas e o acesso LAN. Faz backup dos dados da v0.2 antes de atualizar.
 4. Importa o ficheiro `zimaos-compose.yml` em **Aplicação personalizada → Importar Docker Compose**.
 5. Abre o painel em `http://IP_DO_ZIMAOS:8484` apenas na rede local de confiança.
 
-> Na v0.3 já não é necessário montar `/DATA/AppData/MrStore_webhost/app/`: a imagem publicada inclui os ficheiros Python e HTML. Preserva somente o volume persistente `/data`. **Não inicies duas versões a controlar os mesmos dados/contendores ao mesmo tempo.**
+> Na v0.4 já não é necessário montar `/DATA/AppData/MrStore_webhost/app/`: a imagem publicada inclui os ficheiros Python e HTML. Preserva somente o volume persistente `/data`. **Não inicies duas versões a controlar os mesmos dados/contendores ao mesmo tempo.**
 
 ## Testes
 

@@ -1,3 +1,5 @@
+> Auditoria histórica da v0.3. Para a nova fronteira de segurança e pendências ZimaOS, ver `docs/ROOTLESS_SETUP.md` e `docs/ZIMAOS_ACCEPTANCE_RESULT.md`.
+
 # Auditoria v0.3 — MrStore_webhost
 
 ## Resumo

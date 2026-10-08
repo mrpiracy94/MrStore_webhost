@@ -27,13 +27,16 @@ HOST_DATA_DIR = os.environ.get('HOST_DATA_DIR', '/DATA/AppData/MrStore_webhost/d
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '')
 PORT = int(os.environ.get('PORT', '8484'))
 SITE_BIND_IP = os.environ.get('SITE_BIND_IP', '127.0.0.1')
+# Hard-coded endpoint prevents silent fallback to /var/run/docker.sock.
+DOCKER_SOCKET = '/run/mrstore/docker.sock'
+DOCKER_ENDPOINT = f'unix://{DOCKER_SOCKET}'
 HEALTH_ATTEMPTS = max(1, min(40, int(os.environ.get('HEALTH_ATTEMPTS', '20'))))
 MAX_ZIP = 50 * 1024 * 1024
 MAX_UNPACKED = 150 * 1024 * 1024
 MAX_FILES = 2500
 MAX_EDIT = 1024 * 1024
 MAX_LIST = 500
-VERSION = '0.3'
+VERSION = '0.4'
 ALLOWED = {'html', 'php', 'react', 'node'}
 LOCK = threading.RLock()
 SESSIONS = {}
@@ -99,9 +102,31 @@ def save_db(db):
     os.replace(tmp, DB)
 
 
+def verify_rootless_engine():
+    """Fail closed: the panel may only control an explicitly mounted rootless Docker daemon.
+
+    Docker's client context/env must not silently target the host administrative daemon.
+    The rootless daemon should be dedicated to websites, not other personal containers.
+    """
+    if os.environ.get('DOCKER_HOST') != DOCKER_ENDPOINT:
+        raise RuntimeError('DOCKER_HOST deve apontar exclusivamente para ' + DOCKER_ENDPOINT)
+    if not Path(DOCKER_SOCKET).is_socket():
+        raise RuntimeError('Socket Docker rootless nao encontrado: ' + DOCKER_SOCKET)
+    try:
+        info = subprocess.run(['docker', '--host', DOCKER_ENDPOINT, 'info',
+                               '--format', '{{json .SecurityOptions}}'],
+                              capture_output=True, text=True, timeout=20, check=True)
+        options = json.loads(info.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise RuntimeError('Nao foi possivel verificar o daemon Docker rootless.') from exc
+    if not isinstance(options, list) or 'name=rootless' not in options:
+        raise RuntimeError('Daemon Docker administrativo recusado: requer SecurityOptions name=rootless.')
+    return True
+
+
 def docker(*args, timeout=40, check=True):
     try:
-        process = subprocess.run(['docker', *map(str, args)], capture_output=True, text=True,
+        process = subprocess.run(['docker', '--host', DOCKER_ENDPOINT, *map(str, args)], capture_output=True, text=True,
                                  timeout=timeout, encoding='utf-8', errors='replace')
     except subprocess.TimeoutExpired:
         raise RuntimeError('A operacao excedeu o tempo limite.')
@@ -551,7 +576,7 @@ def unzip_safely(data, destination):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'MrStore_webhost/0.3'
+    server_version = 'MrStore_webhost/0.4'
 
     def log_message(self, fmt, *args):
         print(f'{self.address_string()} - {fmt % args}', flush=True)
@@ -861,6 +886,10 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == '__main__':
+    try:
+        verify_rootless_engine()
+    except RuntimeError as error:
+        raise SystemExit('ERRO DE SEGURANCA: ' + str(error))
     init()
     recover_interrupted_deployments()
     print(f'MrStore_webhost a funcionar na porta {PORT}', flush=True)

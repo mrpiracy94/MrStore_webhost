@@ -1,11 +1,14 @@
 # Prebuilt Docker CLI image: available only after the GitHub Actions publish job succeeds.
 # Before importing, change ADMIN_PASSWORD to a unique secret, and confirm /DATA path.
 # The panel and sites are LAN-accessible: never expose these ports to the Internet.
+# Requires a separate Docker rootless daemon on the ZimaOS host: see docs/ROOTLESS_SETUP.md.
 name: mrstore_webhost
 services:
   webhost:
-    image: ghcr.io/mrpiracy94/mrstore_webhost:0.3.0
+    image: ghcr.io/mrpiracy94/mrstore_webhost:0.4.0
     container_name: mrstore_webhost-panel
+    # Change to the UID/GID of the dedicated rootless Docker owner.
+    user: "1000:1000"
     restart: unless-stopped
     ports:
       - "8484:8484"
@@ -14,9 +17,12 @@ services:
       HOST_DATA_DIR: "/DATA/AppData/MrStore_webhost/data"
       SITE_BIND_IP: "0.0.0.0"
       PORT: "8484"
+      DOCKER_HOST: "unix:///run/mrstore/docker.sock"
       HEALTH_ATTEMPTS: "20"
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
+      # Only configure this after verifying that the user 1000 daemon is rootless.
+      # Replace 1000 with the dedicated user's real UID.
+      - /run/user/1000/docker.sock:/run/mrstore/docker.sock
       - /DATA/AppData/MrStore_webhost/data:/data
     security_opt:
       - no-new-privileges:true
@@ -41,4 +47,4 @@ x-casaos:
   architectures:
     - amd64
     - arm64
-  version: "0.3.0"
+  version: "0.4.0"
