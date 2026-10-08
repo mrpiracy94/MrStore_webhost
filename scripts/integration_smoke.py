@@ -101,7 +101,8 @@ def run_tests():
                '-v', f'{sock_dir}:/home/rootless/.docker/run',
                '-p', '127.0.0.1:9101:9101', '-p', '127.0.0.1:9102:9102',
                '-p', '127.0.0.1:9103:9103', '-p', '127.0.0.1:9104:9104',
-               'docker:27-dind-rootless')
+               '--entrypoint', '/bin/sh', 'docker:27-dind-rootless', '-ec',
+               'echo ROOTLESS_DIAGNOSTICS; id; printf "HOME=%s XDG_RUNTIME_DIR=%s\\n" "$HOME" "$XDG_RUNTIME_DIR"; ls -ld "$XDG_RUNTIME_DIR" /home/rootless/.docker 2>&1 || :; exec /usr/local/bin/dockerd-entrypoint.sh dockerd --debug')
         wait_for_rootless(sock_dir)
         docker('run', '-d', '--name', PANEL_NAME, '--user', '1000:1000',
                '-p', '127.0.0.1:18484:8484',
