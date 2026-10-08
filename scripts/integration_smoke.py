@@ -59,6 +59,9 @@ def wait_for_rootless(sock_dir, seconds=100):
     socket = str(Path(sock_dir) / 'docker.sock')
     end = time.monotonic() + seconds
     while time.monotonic() < end:
+        state = docker('inspect', '--format', '{{.State.Status}}', ENGINE_NAME, check=False)
+        if state.returncode == 0 and state.stdout.strip() == 'exited':
+            break
         try:
             info = subprocess.run(['sudo', '-n', 'docker', '--host', 'unix://' + socket, 'info',
                                    '--format', '{{json .SecurityOptions}}'],
