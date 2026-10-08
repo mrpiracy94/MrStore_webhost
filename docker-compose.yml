@@ -1,0 +1,33 @@
+name: mrstore_webhost
+services:
+  webhost:
+    build: .
+    image: mrstore_webhost:local
+    container_name: mrstore_webhost-panel
+    restart: unless-stopped
+    ports:
+      - "8484:8484"
+    environment:
+      ADMIN_PASSWORD: ${WEBHOST_ADMIN_PASSWORD:?Define_WEBHOST_ADMIN_PASSWORD}
+      HOST_DATA_DIR: ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}
+      PORT: "8484"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}:/data
+x-casaos:
+  id: com.local.mrstore_webhost
+  main: webhost
+  index: /
+  port_map: "8484"
+  scheme: http
+  title:
+    en_US: MrStore_webhost
+    pt_PT: MrStore_webhost
+  tagline:
+    en_US: Manage HTML, PHP, React and Node websites
+    pt_PT: Gere websites HTML, PHP, React e Node
+  category: Developer
+  version: "0.2.0"
+  architectures:
+    - amd64
+    - arm64

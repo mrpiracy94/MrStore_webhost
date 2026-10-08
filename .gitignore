@@ -1,0 +1,8 @@
+# Segredos, dados e caches locais
+.env
+.env.*
+!.env.example
+data/
+__pycache__/
+*.py[cod]
+*.log
