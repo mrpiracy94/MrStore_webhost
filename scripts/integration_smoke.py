@@ -63,7 +63,7 @@ def wait_for_rootless(sock_dir, seconds=100):
             info = subprocess.run(['docker', '--host', 'unix://' + socket, 'info',
                                    '--format', '{{json .SecurityOptions}}'],
                                   capture_output=True, text=True, timeout=5)
-            if info.returncode == 0 and 'name=rootless' in json.loads(info.stdout):
+            if info.returncode == 0 and isinstance(json.loads(info.stdout), list) and 'name=rootless' in json.loads(info.stdout):
                 return
         except (subprocess.SubprocessError, ValueError, OSError):
             pass
