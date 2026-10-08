@@ -10,6 +10,12 @@ A v0.4 recusa a ligação ao Docker administrativo, incluindo o socket `/var/run
 
 Lê [docs/ROOTLESS_SETUP.md](docs/ROOTLESS_SETUP.md) antes da atualização. O novo daemon não vê os contentores antigos: faz backup dos dados e republica os websites. A compatibilidade física com ZimaOS continua por comprovar.
 
+## Release candidate para instalação de teste no ZimaOS
+
+A branch `stabilization/rootless-ci-zimaos` constrói a imagem **`ghcr.io/mrpiracy94/mrstore_webhost:0.4.0-rc`** depois dos testes unitários e de integração Docker rootless terem sucesso. O manifesto `zimaos-compose.yml` desta branch aponta para essa candidata. **Só instala depois de verificar o job `image` e de confirmar que o pacote GHCR está publicamente acessível**. A versão `0.4.0` final só será publicada ao integrar na `main` após aceitação física.
+
+A integração automatizada testa as quatro tecnologias, uma atualização válida, a rejeição de uma atualização HTTP 500 e a sobrevivência dos websites após reinício do painel. Estes testes **não substituem** o teste no NAS após reinício do equipamento.
+
 ## Novidades da v0.4
 
 - **HTTP readiness:** antes de parar o website antigo, inicia a nova release num contentor sem porta publicada e verifica HTTP internamente. Após a troca de portas, repete a verificação HTTP. Códigos 2xx/3xx são considerados prontos; uma rota `/` que devolva 404, 401 ou 500 é considerada falha. Para uma API sem rota `/`, cria uma rota inicial saudável.

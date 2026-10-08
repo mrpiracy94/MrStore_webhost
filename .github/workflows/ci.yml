@@ -1,7 +1,7 @@
 name: CI and container release
 on:
   push:
-    branches: [main]
+    branches: [main, stabilization/rootless-ci-zimaos]
   pull_request:
   workflow_dispatch:
 permissions:
@@ -62,7 +62,9 @@ jobs:
       - name: Execute real Docker integration smoke tests
         run: python scripts/integration_smoke.py
   image:
-    if: github.event_name != 'pull_request'
+    # Candidate image is built on the stabilization branch only after test + integration succeed.
+    # Final version tag is published only from main.
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/stabilization/rootless-ci-zimaos')
     needs: [test, integration]
     runs-on: ubuntu-latest
     permissions:
@@ -84,4 +86,4 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ghcr.io/mrpiracy94/mrstore_webhost:0.4.0
+          tags: ${{ github.ref == 'refs/heads/main' && 'ghcr.io/mrpiracy94/mrstore_webhost:0.4.0' || 'ghcr.io/mrpiracy94/mrstore_webhost:0.4.0-rc' }}

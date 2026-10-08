@@ -1,11 +1,12 @@
-# Prebuilt Docker CLI image: available only after the GitHub Actions publish job succeeds.
+# RELEASE CANDIDATE for ZimaOS testing only. The production tag 0.4.0 is published from main after physical acceptance.
+# Requires a successful GitHub Actions image job and PUBLIC visibility of the GHCR package.
 # Before importing, change ADMIN_PASSWORD to a unique secret, and confirm /DATA path.
 # The panel and sites are LAN-accessible: never expose these ports to the Internet.
 # Requires a separate Docker rootless daemon on the ZimaOS host: see docs/ROOTLESS_SETUP.md.
 name: mrstore_webhost
 services:
   webhost:
-    image: ghcr.io/mrpiracy94/mrstore_webhost:0.4.0
+    image: ghcr.io/mrpiracy94/mrstore_webhost:0.4.0-rc
     container_name: mrstore_webhost-panel
     # Change to the UID/GID of the dedicated rootless Docker owner.
     user: "1000:1000"
