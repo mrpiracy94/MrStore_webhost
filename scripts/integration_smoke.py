@@ -60,7 +60,7 @@ def wait_for_rootless(sock_dir, seconds=100):
     end = time.monotonic() + seconds
     while time.monotonic() < end:
         try:
-            info = subprocess.run(['docker', '--host', 'unix://' + socket, 'info',
+            info = subprocess.run(['sudo', '-n', 'docker', '--host', 'unix://' + socket, 'info',
                                    '--format', '{{json .SecurityOptions}}'],
                                   capture_output=True, text=True, timeout=5)
             if info.returncode == 0 and isinstance(json.loads(info.stdout), list) and 'name=rootless' in json.loads(info.stdout):
@@ -68,7 +68,9 @@ def wait_for_rootless(sock_dir, seconds=100):
         except (subprocess.SubprocessError, ValueError, OSError):
             pass
         time.sleep(2)
-    raise RuntimeError('Docker rootless de teste nao iniciou/nao passou validacao de seguranca.')
+    report = docker('logs', '--tail', '50', ENGINE_NAME, check=False)
+    raise RuntimeError('Docker rootless de teste nao iniciou/nao passou validacao de seguranca. '
+                       + (report.stdout or report.stderr)[-2200:])
 
 
 def run_tests():
@@ -78,7 +80,10 @@ def run_tests():
     folder = tempfile.mkdtemp(prefix='mrstore_ci_')
     sock_dir = tempfile.mkdtemp(prefix='mrstore_rootless_socket_')
     os.chmod(folder, 0o777)
-    os.chmod(sock_dir, 0o777)
+    # Rootlesskit refuses an XDG_RUNTIME_DIR writable by other users.
+    # GitHub-hosted CI permits sudo; NEVER do this on a production NAS.
+    subprocess.run(['sudo', '-n', 'chown', '1000:1000', sock_dir], check=True)
+    os.chmod(sock_dir, 0o700)
     try:
         docker('run', '-d', '--privileged', '--name', ENGINE_NAME,
                '-v', f'{folder}:{folder}',
