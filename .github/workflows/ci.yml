@@ -41,7 +41,8 @@ jobs:
         with:
           python-version: '3.12'
       - name: Build local integration image
-        run: docker build --pull -t mrstore_webhost:ci .
+        run: |
+          docker build --pull -t mrstore_webhost:ci .
           docker pull docker:27-dind-rootless
       - name: Execute real Docker integration smoke tests
         run: python scripts/integration_smoke.py
