@@ -93,7 +93,9 @@ def run_tests():
         docker('run', '-d', '--privileged', '--name', ENGINE_NAME,
                '-e', 'DOCKER_TLS_CERTDIR=',
                '-v', f'{folder}:{folder}',
-               '-v', f'{sock_dir}:/run/user/1000',
+               '-e', 'XDG_RUNTIME_DIR=/home/rootless/.docker/run',
+               '-e', 'DOCKER_HOST=unix:///home/rootless/.docker/run/docker.sock',
+               '-v', f'{sock_dir}:/home/rootless/.docker/run',
                '-p', '127.0.0.1:9101:9101', '-p', '127.0.0.1:9102:9102',
                '-p', '127.0.0.1:9103:9103', '-p', '127.0.0.1:9104:9104',
                'docker:27-dind-rootless')
