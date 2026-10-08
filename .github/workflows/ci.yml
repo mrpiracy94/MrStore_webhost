@@ -19,6 +19,13 @@ jobs:
           node-version: '22'
       - name: Unit and HTTP tests
         run: python -m unittest discover -s tests -v
+      - name: ZimaOS preflight shell syntax and fail-closed behavior
+        run: |
+          sh -n scripts/zimaos_preflight.sh
+          if sh scripts/zimaos_preflight.sh; then
+            echo 'Expected preflight failure on an unconfigured CI runner' >&2
+            exit 1
+          fi
       - name: Python and JavaScript syntax
         run: |
           python -m py_compile app/server.py
