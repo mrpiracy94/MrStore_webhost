@@ -37,6 +37,10 @@ class FakeDocker:
         self.containers = {}
         self.calls = []
         self.fail_next_run = False
+        self.health_fail_count = 0
+        self.fail_promote = False
+        self.fail_preview_health = False
+        self.fail_candidate_health = False
 
     def __call__(self, *args, **kwargs):
         self.calls.append(args)
@@ -61,6 +65,12 @@ class FakeDocker:
             labels = dict(x.split('=', 1) for x in labelvals)
             self.containers[name] = {'Config':{'Labels':labels}, 'State':{'Running':True}}
             output = 'new-container-id'
+        elif cmd == 'exec':
+            if (self.fail_preview_health and args[1].endswith('-probe')) or (self.fail_candidate_health and args[1].endswith('-next')):
+                rc = 1
+            if self.health_fail_count > 0:
+                self.health_fail_count -= 1
+                rc = 1
         elif cmd == 'stop':
             self.containers[args[1]]['State']['Running'] = False
         elif cmd == 'start':
@@ -68,6 +78,9 @@ class FakeDocker:
         elif cmd == 'rm':
             self.containers.pop(args[-1], None)
         elif cmd == 'rename':
+            if self.fail_promote and args[1].endswith('-next'):
+                self.fail_promote = False
+                raise RuntimeError('forced promotion failure')
             self.containers[args[2]] = self.containers.pop(args[1])
         class Result:
             pass
@@ -159,6 +172,113 @@ class TestHTTP(unittest.TestCase):
         status, _, cookie = self.call('POST', '/api/login', {'password': web.ADMIN_PASSWORD})
         self.assertEqual(status, 200)
         return cookie.split(';')[0]
+
+
+    def test_preflight_http_failure_preserves_running_site(self):
+        cookie = self.login()
+        self.call('POST', '/api/sites', {'slug': 'pagina', 'name': 'Pagina', 'kind': 'html'}, cookie=cookie)
+        src = web.SITES / 'pagina/source'
+        src.mkdir()
+        (src / 'index.html').write_text('first')
+        fake = FakeDocker()
+        with patch.object(web, 'docker', side_effect=fake):
+            web.deploy_site('pagina')
+            old_release = web.load_db()['pagina']['active_release']
+            (src / 'index.html').write_text('second')
+            fake.fail_preview_health = True
+            with patch.object(web, 'HEALTH_ATTEMPTS', 2), patch.object(web.time, 'sleep'):
+                web.deploy_site('pagina')
+        self.assertTrue(fake.containers['zwh-pagina']['State']['Running'])
+        self.assertEqual(web.load_db()['pagina']['active_release'], old_release)
+        self.assertIn('HTTP', web.load_db()['pagina']['last_error'])
+        self.assertFalse('zwh-pagina-probe' in fake.containers)
+        self.assertFalse('pending_release' in web.load_db()['pagina'])
+
+    def test_candidate_http_failure_rolls_back(self):
+        cookie = self.login()
+        self.call('POST', '/api/sites', {'slug': 'pagina', 'name': 'Pagina', 'kind': 'html'}, cookie=cookie)
+        src = web.SITES / 'pagina/source'
+        src.mkdir()
+        (src / 'index.html').write_text('first')
+        fake = FakeDocker()
+        with patch.object(web, 'docker', side_effect=fake):
+            web.deploy_site('pagina')
+            original = web.load_db()['pagina']['active_release']
+            (src / 'index.html').write_text('second')
+            fake.fail_candidate_health = True
+            with patch.object(web, 'HEALTH_ATTEMPTS', 2), patch.object(web.time, 'sleep'):
+                web.deploy_site('pagina')
+        self.assertTrue(fake.containers['zwh-pagina']['State']['Running'])
+        self.assertEqual(web.load_db()['pagina']['active_release'], original)
+        self.assertNotIn('zwh-pagina-next', fake.containers)
+        self.assertNotIn('pending_release', web.load_db()['pagina'])
+
+    def test_promotion_error_restores_backup(self):
+        cookie = self.login()
+        self.call('POST', '/api/sites', {'slug': 'pagina', 'name': 'Pagina', 'kind': 'html'}, cookie=cookie)
+        src = web.SITES / 'pagina/source'
+        src.mkdir()
+        (src / 'index.html').write_text('first')
+        fake = FakeDocker()
+        with patch.object(web, 'docker', side_effect=fake):
+            web.deploy_site('pagina')
+            original = web.load_db()['pagina']['active_release']
+            (src / 'index.html').write_text('second')
+            fake.fail_promote = True
+            web.deploy_site('pagina')
+        self.assertTrue(fake.containers['zwh-pagina']['State']['Running'])
+        self.assertEqual(web.load_db()['pagina']['active_release'], original)
+        self.assertNotIn('zwh-pagina-prev', fake.containers)
+        self.assertIn('forced promotion failure', web.load_db()['pagina']['last_error'])
+
+    def test_startup_recovers_interrupted_rename(self):
+        cookie = self.login()
+        self.call('POST', '/api/sites', {'slug': 'pagina', 'name': 'Pagina', 'kind': 'html'}, cookie=cookie)
+        src = web.SITES / 'pagina/source'
+        src.mkdir()
+        (src / 'index.html').write_text('first')
+        fake = FakeDocker()
+        with patch.object(web, 'docker', side_effect=fake):
+            web.deploy_site('pagina')
+            fake('stop', 'zwh-pagina')
+            fake('rename', 'zwh-pagina', 'zwh-pagina-prev')
+            db = web.load_db()
+            db['pagina']['pending_release'] = 'new-but-uncommitted'
+            db['pagina']['pending_was_running'] = True
+            web.save_db(db)
+            web.recover_interrupted_deployments()
+        self.assertTrue(fake.containers['zwh-pagina']['State']['Running'])
+        self.assertNotIn('pending_release', web.load_db()['pagina'])
+        self.assertNotIn('zwh-pagina-prev', fake.containers)
+        self.assertIn('recuperada', web.load_db()['pagina']['last_error'])
+
+    def test_deployment_audit_events_returned_with_logs(self):
+        cookie = self.login()
+        self.call('POST', '/api/sites', {'slug': 'pagina', 'name': 'Pagina', 'kind': 'html'}, cookie=cookie)
+        src = web.SITES / 'pagina/source'
+        src.mkdir()
+        (src / 'index.html').write_text('first')
+        fake = FakeDocker()
+        with patch.object(web, 'docker', side_effect=fake):
+            web.deploy_site('pagina')
+            status, body, _ = self.call('GET', '/api/sites/pagina/logs', cookie=cookie)
+        self.assertEqual(status, 200)
+        self.assertIn('events', body)
+        self.assertIn('publicada', [e['event'] for e in body['events']])
+
+    def test_probe_commands_use_real_http_clients(self):
+        for kind, runtime in [('html', 'wget'), ('react', 'wget'), ('php', 'php'), ('node', 'node')]:
+            with self.subTest(kind=kind):
+                cmd = web.probe_command(kind, 'zwh-site-probe')
+                self.assertEqual(cmd[:2], ('exec', 'zwh-site-probe'))
+                self.assertEqual(cmd[2], runtime)
+
+    def test_site_ports_are_bound_to_configured_ip(self):
+        site = {'slug': 'example', 'port': 9123, 'kind': 'html'}
+        args = web.site_run_args(site, 'r1', 'zwh-example-probe')
+        self.assertIn(f'{web.SITE_BIND_IP}:9123:8080', args)
+        preview = web.site_run_args(site, 'r1', 'zwh-example-probe', published=False)
+        self.assertNotIn('-p', preview)
 
     def test_panel_html_renders_and_has_editor(self):
         con = http.client.HTTPConnection('127.0.0.1', self.port, timeout=3)

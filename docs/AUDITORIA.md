@@ -1,20 +1,26 @@
-# Auditoria da v0.1 → v0.2
+# Auditoria v0.3 — MrStore_webhost
 
-## Problemas identificados e ações
+## Resumo
 
-| Achado | Efeito potencial na v0.1 | Tratamento v0.2 |
-|---|---|---|
-| Substituição direta de `source/` durante upload | Sites em execução podiam perder ficheiros | Publicações usam snapshots isolados em `releases/`; o ZIP altera apenas `source/` |
-| Apagar contentor antes do build/arranque novo | Erro de build podia interromper o site em produção | Build primeiro, manter contentor antigo até à promoção; rollback best-effort |
-| Sem editor de ficheiros | Requeria ZIP para qualquer alteração | Gestor visual para ficheiros de texto UTF-8 até 1 MB |
-| API aceitava POSTs sem prova anti-CSRF além de Origin opcional | Proteção incompleta contra pedidos cross-site | Header não simples obrigatório + verificação de Origin quando presente |
-| Comandos de instalação Docker dependentes de `apk add` no boot | Arranque podia falhar sem rede | Mantida opção `Dockerfile` para imagem pré-construída; método de importação continua a ter dependência de rede |
-| Docker socket montado no painel | Acesso potencial a root do anfitrião | Risco explicitado; **não solucionado** na v0.2 |
-| Sem publicação real verificada em ZimaOS | Compatibilidade não demonstrada | Testes simulados ampliados; **teste no hardware continua pendente** |
+- O painel é experimental e gere Docker com acesso administrativo. A v0.3 **não elimina** os privilégios efetivos associados ao socket Docker.
+- A instalação local deixa painel e sites associados a `127.0.0.1`, por omissão; a variante importada no ZimaOS expõe no LAN e precisa de firewall, rede privada ou VPN.
+- O deployment usa um contentor sem porta externa para o teste HTTP antes de parar o antigo. A nova release volta a ser testada após obter a porta real.
+- Em falhas durante a publicação, o código tenta restaurar o contentor anterior e mantém `active_release` inalterado até à nova publicação responder corretamente.
+- Um marcador de publicação pendente em `sites.json` permite retomar/recuperar estados interrompidos quando o painel reinicia. Não existem transações atómicas entre Docker e a base de dados; alguns estados de falha precisam de recuperação manual.
+- A UI apresenta logs Docker e os últimos eventos de publicação, guardados em `/data/events.jsonl`.
 
-## Limitações importantes
+## Aceitação antes de produção
 
-- Contentor temporário, paragem e promoção exigem algum downtime; o rollback não cobre falhas de hardware, reinícios durante a troca nem aplicações que falham após o instante do arranque.
-- Publicação de sites de terceiros envolve execução arbitrária de PHP, Node e scripts de instalação npm. O isolamento Docker não torna projetos não confiáveis seguros.
-- A revisão não é uma auditoria de segurança independente. Não expor à Internet sem um desenho de segurança adicional.
-- Se ainda existem contentores publicados com a v0.1, republica cada site uma vez após instalar a v0.2 e antes de alterar o código através do editor.
+1. CI passa testes unitários, sintáticos e integração Docker real (4 tecnologias).
+2. Verifica que o pacote `ghcr.io/mrpiracy94/mrstore_webhost:0.3.0` é descarregável anonimamente, se usares a importação do ZimaOS.
+3. Testa numa máquina de desenvolvimento equivalente em arquitetura e caminhos.
+4. Executa testes no ZimaOS real, com snapshot/backup e com portas livres.
+5. Testa indisponibilidade, restauro de versões após falha de HTTP e interrupção/reinício durante deploy.
+6. Adiciona backups externos e firewall. Não exponhas o painel à Internet.
+
+## Riscos remanescentes
+
+- Docker socket = controlo de administrador do NAS. Nunca carregar código de projetos não confiáveis.
+- Rollback best-effort; atualização não tem zero downtime, failover nem saúde contínua.
+- GHCR e dependências npm precisam de Internet durante instalação/build inicial.
+- PHP e Node no ambiente não são isolamento para utilizadores maliciosos; não existem quotas robustas ou limites de rede por website.

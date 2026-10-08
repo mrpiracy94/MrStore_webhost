@@ -1,83 +1,63 @@
-# MrStore_webhost 0.2 — Painel de alojamento para ZimaOS
+# MrStore_webhost v0.3 — Alojamento web para ZimaOS
 
-**Protótipo funcional para uso pessoal e LAN. Não é um painel de produção, nem foi testado num dispositivo ZimaOS real.** Gere websites HTML/CSS/JS, PHP básico, React/Vite estático e Node.js (`npm start`) em contentores Docker independentes.
+Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em contentores Docker independentes. Código disponível neste **repositório independente** (`mrpiracy94/MrStore_webhost`), sem dependências da MrStore.
 
-## Novidades da v0.2
+> **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. O acesso a `/var/run/docker.sock` concede privilégios administrativos sobre o host; **não exponhas o painel diretamente à Internet.**
 
-- **Gestor de ficheiros:** consultar, criar, editar e apagar ficheiros de texto no navegador (até 1 MB por ficheiro). Abre **Ficheiros** no cartão do website; edita e clica em **Guardar alterações**. O website só muda quando carregares em **Publicar**.
-- **Publicação por versões:** cada publicação cria uma cópia isolada em `data/sites/<slug>/releases/<versão>`; o ZIP e o editor modificam apenas `source/`.
-- **Menos interrupções:** valida os ficheiros e executa o build antes de parar o contentor antigo; em determinados erros de arranque tenta repor o anterior. Durante a troca do contentor há uma breve indisponibilidade. Não existe garantia de rollback em falhas de máquina, reinícios ou erros de aplicação após arrancar.
-- **Proteção CSRF:** API exige `X-MrStore_webhost-Request: 1` em pedidos POST e valida `Origin` quando presente. O painel acrescenta o cabeçalho automaticamente.
-- **Verificações adicionais:** bloqueio de caminhos fora da pasta do website, limitação de edição e testes para falhas de atualização.
+## Novidades da v0.3
 
-## Instalação com o importador do ZimaOS
+- **HTTP readiness:** antes de parar o website antigo, inicia a nova release num contentor sem porta publicada e verifica HTTP internamente. Após a troca de portas, repete a verificação HTTP. Códigos 2xx/3xx são considerados prontos; uma rota `/` que devolva 404, 401 ou 500 é considerada falha. Para uma API sem rota `/`, cria uma rota inicial saudável.
+- **Recuperação:** mantém o contentor anterior até a nova versão responder, escreve um marcador persistente de publicação em `sites.json` e recupera publicações interrompidas no arranque do painel. Não é recuperação transacional para todo e qualquer cenário de falha, nem zero downtime.
+- **Logs:** histórico de publicação por website, mensagens de erro e logs do contentor no painel; jornal limitado a 2 MB antes de uma rotação simplificada.
+- **Docker CLI sem `apk add` no arranque:** o `Dockerfile` copia um Docker CLI durante a construção. A instalação via importação do ZimaOS passa a usar uma imagem GHCR preconstruída **apenas após** a workflow `CI and container release` ter passado e a imagem estar publicamente acessível no GHCR.
+- **Segurança de rede:** `docker-compose.yml` publica a porta do painel e as portas dos sites apenas em `127.0.0.1` por omissão. Abre para a LAN de forma intencional quando precisares. A configuração `zimaos-compose.yml` publica no LAN para acesso direto e deve ficar atrás de firewall/VPN.
+- **CI:** testes Python e JavaScript, integração com Docker real para HTML, PHP, Node e React, e publicação de imagem AMD64/ARM64 no GHCR **depois dos testes passarem**. A existência do workflow não prova que já tenha executado com sucesso.
 
-1. Descompacta o ZIP no teu computador.
-2. No ZimaOS, cria as pastas `/DATA/AppData/MrStore_webhost/app` e `/DATA/AppData/MrStore_webhost/data` (confirma que `/DATA` é o teu volume correto).
-3. Copia `app/server.py` e `app/index.html` do pacote para `/DATA/AppData/MrStore_webhost/app/`.
-4. Edita **`zimaos-compose.yml`** e define uma password única de pelo menos 12 caracteres no campo `ADMIN_PASSWORD`. Se alterares o caminho de dados, atualiza *tanto* `HOST_DATA_DIR` como o volume `/data`.
-5. No painel do ZimaOS, importa o conteúdo editado do `zimaos-compose.yml` como aplicação Docker Compose personalizada e instala.
-6. Abre `http://IP_DO_ZIMAOS:8484` pela rede local.
+## Instalar via Docker Compose (recomendado para primeiro teste)
 
-**Atenção:** o método de importação utiliza `python:3.12-alpine` e descarrega `docker-cli` no arranque, exigindo ligação à Internet em cada arranque enquanto essa dependência não estiver em cache. Para evitar isso, utiliza a alternativa abaixo.
+1. Faz download/clona este repositório num host com Docker e Compose. Confirma que a porta 8484 e 9101–9200 estão livres.
+2. Copia `.env.example` para `.env`, define `WEBHOST_ADMIN_PASSWORD` única de pelo menos 12 caracteres, confirma o valor absoluto de `WEBHOST_DATA_DIR` e, se fores usar acesso LAN, define **explicitamente** `WEBHOST_PANEL_BIND_IP` e `WEBHOST_SITE_BIND_IP` com o IP LAN do host.
+3. Executa `docker compose up -d --build` e consulta os logs com `docker compose logs -f`.
+4. Abre `http://127.0.0.1:8484` no próprio host (ou `http://IP_LAN:8484` se ativares acesso LAN). Usa uma VPN ou túnel SSH para acesso remoto.
 
-## Instalação por terminal/SSH
+Os websites criados terão portas 9101–9200, também associadas ao `WEBHOST_SITE_BIND_IP` definido. Numa instalação com bind a `127.0.0.1`, outras máquinas não conseguem alcançar os sites diretamente. A imagem local constrói-se durante a instalação, mas **não precisa de descarregar Docker CLI a cada arranque**.
 
-1. Copia toda a pasta `MrStore_webhost` para o teu ZimaOS ou Linux Docker.
-2. Copia `.env.example` para `.env`, escolhe `WEBHOST_ADMIN_PASSWORD` e confirma o caminho absoluto `WEBHOST_DATA_DIR`.
-3. Na pasta do projeto, executa `docker compose up -d --build`.
-4. Abre `http://IP_DO_ZIMAOS:8484`.
+## Instalar pelo importador do ZimaOS
 
-O método por terminal pode não criar automaticamente o ícone na App Store do ZimaOS. O `Dockerfile` instala `docker-cli` ao construir a imagem e não depende do `apk add` em cada reinício.
+1. Abre as execuções do GitHub Actions e confirma que `CI and container release` terminou sem erros e publicou `ghcr.io/mrpiracy94/mrstore_webhost:0.3.0` para AMD64/ARM64.
+2. Confirma que o pacote GHCR está **público** (a publicação num repositório público não garante visibilidade pública automática do pacote). Se a imagem não puder ser descarregada anonimamente, utiliza a instalação por terminal/Compose.
+3. Edita `zimaos-compose.yml`: **substitui** `ADMIN_PASSWORD`, confirma a pasta `/DATA/AppData/MrStore_webhost/data`, as portas e o acesso LAN. Faz backup dos dados da v0.2 antes de atualizar.
+4. Importa o ficheiro `zimaos-compose.yml` em **Aplicação personalizada → Importar Docker Compose**.
+5. Abre o painel em `http://IP_DO_ZIMAOS:8484` apenas na rede local de confiança.
 
-## Migração de versões anteriores (ZimaWebHost v0.1/v0.2)
+> Na v0.3 já não é necessário montar `/DATA/AppData/MrStore_webhost/app/`: a imagem publicada inclui os ficheiros Python e HTML. Preserva somente o volume persistente `/data`. **Não inicies duas versões a controlar os mesmos dados/contendores ao mesmo tempo.**
 
-Esta publicação foi renomeada para **MrStore_webhost**. A instalação nova utiliza `/DATA/AppData/MrStore_webhost/` e o contentor `mrstore_webhost-panel` por omissão. **Não é uma atualização automática in-place** da marca anterior: ao migrar, faz backup de `/DATA/AppData/ZimaWebHost/data` e decide se queres copiar os dados para `/DATA/AppData/MrStore_webhost/data` antes do arranque. Não executes as duas versões simultaneamente na mesma porta 8484 nem permitas que ambas controlem os mesmos websites. A migração real não foi testada em ZimaOS.
+## Testes
 
-## Utilização
+```bash
+python -m unittest discover -s tests -v
+python -m py_compile app/server.py
+# Requer Docker com permissão de criar/remover contentores e portas livres (não executar num NAS de produção)
+docker build -t mrstore_webhost:ci .
+python scripts/integration_smoke.py
+```
 
-1. Clica em **Novo website**, indica nome, identificador e tecnologia.
-2. Envia o teu projeto em ZIP; ou abre **Ficheiros** e cria `index.html`, `index.php`, `package.json` etc.
-3. Clica em **Publicar**. O site fica numa porta da gama 9101–9200.
-4. Consulta **Logs** quando surgir um erro. Usa **Parar** ou **Eliminar** quando necessário.
+O smoke test real testa o painel e o deploy de quatro tecnologias nas portas 9101–9104, deixando explícita a necessidade de Docker. Não foi possível executar Docker neste ambiente de desenvolvimento; os testes de integração serão executados no GitHub Actions se os runners tiverem Docker e acesso às imagens.
 
-| Tecnologia | Requisito | Execução |
+## Compatibilidade e limitações
+
+| Tecnologia | Imagem/execução | Requisitos |
 |---|---|---|
-| HTML / CSS / JS | `index.html` | Nginx sem privilégios |
-| PHP | `index.php` ou `index.html` | PHP 8.3 e Apache; extensões opcionais não instaladas |
-| React / Vite | `package.json` com `scripts.build`; cria `dist/index.html` ou `build/index.html` | Node 22 para build, Nginx para servir |
-| Node.js | `package.json` com `scripts.start`; escuta `0.0.0.0` na porta 3000 / `PORT` | Node 22, `npm start` |
+| HTML | `nginxinc/nginx-unprivileged:stable-alpine` | `index.html` na raiz |
+| PHP | `php:8.3-apache` | `index.php` ou `index.html`; sem extensões extra |
+| React/Vite | Node 22 build, depois Nginx | `package.json` com `scripts.build` e `dist/index.html`/`build/index.html` |
+| Node.js | `node:22-alpine` | `package.json` com `scripts.start`, `PORT=3000`, rota `/` responde com 2xx/3xx |
 
-Os ZIPs de teste encontram-se em `examples/zips/`. Next.js SSR, Laravel, WordPress, PHP com dependências adicionais e aplicações que precisem de volumes de escrita não têm configuração automática. Para Node/React, as dependências são instaladas com `npm ci`/`npm install` no Docker; a origem do projeto deve ser confiável.
+- Só a página `/` é testada; autenticação, bases de dados e endpoints secundários precisam de testes específicos.
+- O painel ainda dispõe do socket Docker; isso mantém risco equivalente a permissões de administrador, apesar de `cap_drop`, `read_only` e a escuta local. Isolar o daemon num host dedicado ou introduzir um serviço de deployment com controlos restritivos exigirá trabalho adicional.
+- PHP corre com um processo principal privilegiado, não há quotas globais de armazenamento, backups automáticos, monitorização contínua HTTP, nem isolamento multiutilizador forte.
+- Existem pequenas interrupções durante a substituição de portas; o rollback cobre falhas de HTTP no arranque e algumas interrupções da execução, mas não garante recuperação após todas as falhas de energia ou crashes posteriores.
+- O editor suporta UTF-8 até 1 MB; os ZIPs são limitados a 50 MB comprimidos, 150 MB descomprimidos e 2.500 ficheiros. Não implementa domínios, HTTPS automático nem MariaDB.
+- Antes de usar em servidores com websites importantes, valida todo o fluxo numa máquina Docker de teste e depois no ZimaOS.
 
-## Segurança e limitações — leitura obrigatória
-
-- **O painel tem acesso ao socket Docker (`/var/run/docker.sock`). Isto dá controlo administrativo sobre o host.** Não publiques a porta 8484 na Internet. Utiliza a aplicação apenas num NAS de confiança e numa rede local controlada.
-- O painel utiliza HTTP local; a password e sessão não estão cifradas em trânsito. Para acesso remoto, prefere uma VPN ou HTTPS configurado por um administrador. Nunca uses HTTP em redes não confiáveis. HTTPS não vem pré-configurado.
-- Os websites publicados usam portas TCP locais entre `9101` e `9200`, geralmente acessíveis na rede se o firewall permitir. Não são automaticamente protegidos por autenticação.
-- PHP usa uma imagem Apache com processo principal de root. Não alojes código PHP não confiável. Não há isolamento de segurança equivalente a um alojamento multiutilizador.
-- Não existem quotas globais de disco para os websites nem um backup automático. São guardadas a release atual e a anterior; faz backup da pasta `data`.
-- A recuperação automática cobre apenas alguns erros de troca de contentores. **Não há zero downtime, verificação HTTP de saúde, nem recuperação assegurada de crashes posteriores.**
-- Upload ZIP até 50 MB, no máximo 2500 entradas e 150 MB descomprimidos; editor apenas para ficheiros UTF-8 até 1 MB. Rejeitam-se ZIPs com links simbólicos, caminhos de escape e ficheiros especiais.
-- Não inclui domínios, HTTPS automático, Git, SSL, MariaDB, backups ou contas múltiplas. Essas funcionalidades ainda estão por implementar.
-- ZimaOS usa tipicamente portas de sistema próprias: evita reservar 80 e 443 sem verificar os serviços existentes.
-
-## Resolução de problemas
-
-- Painel não inicia: confirma `ADMIN_PASSWORD`, a montagem `/data`, a existência de `app/server.py` e os logs do contentor `mrstore_webhost-panel`.
-- Erro Docker: confirma `/var/run/docker.sock` e permissões do contentor.
-- Porta ocupada: vê os logs de Docker e liberta a porta do site, ou ajusta a configuração no host (edição visual de portas ainda não disponível).
-- React/Node não arranca: verifica `package.json`, os scripts npm, o acesso à Internet do builder e os logs após a publicação.
-- A publicação mostrou sucesso mas o site não carrega: consulta **Logs**. O teste de arranque apenas confirma que o contentor está a correr, não que a aplicação HTTP está saudável.
-
-## Verificação
-
-- Testes unitários e HTTP locais com Docker simulado: `python -m unittest discover -s tests -v`.
-- JavaScript verificado sintaticamente com Node.js; YAML verificado sintaticamente com PyYAML.
-- **Sem teste de publicação Docker real neste ambiente.** Antes de instalar no NAS de produção, testa numa máquina Docker de desenvolvimento.
-
-Consulta também `docs/AUDITORIA.md` para os problemas identificados na v0.1, o tratamento aplicado e as limitações remanescentes.
-
-## Código fonte e publicação
-
-Esta aplicação está publicada no repositório independente [`mrpiracy94/MrStore_webhost`](https://github.com/mrpiracy94/MrStore_webhost), separado da MrStore. O projeto inclui o painel (`app/`), configuração Docker, documentação de auditoria (`docs/`), testes unitários (`tests/`) e exemplos (`examples/`). O ficheiro `.env` privado e a pasta de dados não devem ser publicados. O projeto não está validado em ZimaOS físico nem preparado para exposição direta à Internet.
+Ver `docs/AUDITORIA.md` e `docs/CHECKLIST_ZIMAOS.md` para informações adicionais sobre migração e segurança.

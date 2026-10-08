@@ -6,14 +6,25 @@ services:
     container_name: mrstore_webhost-panel
     restart: unless-stopped
     ports:
-      - "8484:8484"
+      # Default local-only access. Set WEBHOST_PANEL_BIND_IP to a LAN interface consciously.
+      - "${WEBHOST_PANEL_BIND_IP:-127.0.0.1}:8484:8484"
     environment:
       ADMIN_PASSWORD: ${WEBHOST_ADMIN_PASSWORD:?Define_WEBHOST_ADMIN_PASSWORD}
       HOST_DATA_DIR: ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}
+      SITE_BIND_IP: ${WEBHOST_SITE_BIND_IP:-127.0.0.1}
       PORT: "8484"
+      HEALTH_ATTEMPTS: "20"
     volumes:
+      # SECURITY: socket remains host-admin equivalent. Use only on trusted hosts.
       - /var/run/docker.sock:/var/run/docker.sock
       - ${WEBHOST_DATA_DIR:-/DATA/AppData/MrStore_webhost/data}:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
 x-casaos:
   id: com.local.mrstore_webhost
   main: webhost
@@ -27,7 +38,7 @@ x-casaos:
     en_US: Manage HTML, PHP, React and Node websites
     pt_PT: Gere websites HTML, PHP, React e Node
   category: Developer
-  version: "0.2.0"
+  version: "0.3.0"
   architectures:
     - amd64
     - arm64

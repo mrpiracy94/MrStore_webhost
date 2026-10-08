@@ -1,22 +1,30 @@
-# Copiar primeiro a pasta app/ deste pacote para /DATA/AppData/MrStore_webhost/app/
-# ALTERAR ADMIN_PASSWORD antes de importar no ZimaOS.
+# Prebuilt Docker CLI image: available only after the GitHub Actions publish job succeeds.
+# Before importing, change ADMIN_PASSWORD to a unique secret, and confirm /DATA path.
+# The panel and sites are LAN-accessible: never expose these ports to the Internet.
 name: mrstore_webhost
 services:
   webhost:
-    image: python:3.12-alpine
+    image: ghcr.io/mrpiracy94/mrstore_webhost:0.3.0
     container_name: mrstore_webhost-panel
     restart: unless-stopped
-    command: ["sh", "-c", "apk add --no-cache docker-cli && exec python /app/server.py"]
     ports:
       - "8484:8484"
     environment:
       ADMIN_PASSWORD: "ALTERAR_PARA_PASSWORD_SEGURA_DE_12_CARACTERES"
       HOST_DATA_DIR: "/DATA/AppData/MrStore_webhost/data"
+      SITE_BIND_IP: "0.0.0.0"
       PORT: "8484"
+      HEALTH_ATTEMPTS: "20"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /DATA/AppData/MrStore_webhost/app:/app:ro
       - /DATA/AppData/MrStore_webhost/data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
 x-casaos:
   id: com.local.mrstore_webhost
   main: webhost
@@ -28,8 +36,9 @@ x-casaos:
     pt_PT: MrStore_webhost
   tagline:
     en_US: Manage HTML, PHP, React and Node websites
+    pt_PT: Gere websites HTML, PHP, React e Node
   category: Developer
   architectures:
     - amd64
     - arm64
-  version: "0.2.0"
+  version: "0.3.0"

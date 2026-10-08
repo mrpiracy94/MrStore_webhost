@@ -2,6 +2,7 @@
 """MrStore_webhost: local single-admin Docker site manager, Python standard library."""
 import hashlib
 import hmac
+import ipaddress
 import io
 import json
 import os
@@ -25,12 +26,14 @@ CONFIG = ROOT / 'config'
 HOST_DATA_DIR = os.environ.get('HOST_DATA_DIR', '/DATA/AppData/MrStore_webhost/data').rstrip('/')
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '')
 PORT = int(os.environ.get('PORT', '8484'))
+SITE_BIND_IP = os.environ.get('SITE_BIND_IP', '127.0.0.1')
+HEALTH_ATTEMPTS = max(1, min(40, int(os.environ.get('HEALTH_ATTEMPTS', '20'))))
 MAX_ZIP = 50 * 1024 * 1024
 MAX_UNPACKED = 150 * 1024 * 1024
 MAX_FILES = 2500
 MAX_EDIT = 1024 * 1024
 MAX_LIST = 500
-VERSION = '0.2'
+VERSION = '0.3'
 ALLOWED = {'html', 'php', 'react', 'node'}
 LOCK = threading.RLock()
 SESSIONS = {}
@@ -41,6 +44,10 @@ LOGIN_ATTEMPTS = {}
 def init():
     if len(ADMIN_PASSWORD) < 12 or any(x in ADMIN_PASSWORD.upper() for x in ('ALTERAR', 'CHANGE_ME', 'COLOCA_AQUI')):
         raise SystemExit('ERRO: Define ADMIN_PASSWORD com pelo menos 12 caracteres antes de iniciar.')
+    try:
+        ipaddress.ip_address(SITE_BIND_IP)
+    except ValueError:
+        raise SystemExit('ERRO: SITE_BIND_IP deve ser um IP literal valido.')
     if not HOST_DATA_DIR.startswith('/') or HOST_DATA_DIR == '/':
         raise SystemExit('ERRO: HOST_DATA_DIR deve ser um caminho absoluto especifico no anfitriao.')
     ROOT.mkdir(parents=True, exist_ok=True)
@@ -117,7 +124,7 @@ def inspect_managed(name, slug):
     except json.JSONDecodeError:
         return None
     labels = info.get('Config', {}).get('Labels', {})
-    if labels.get('org.mrstore_webhost.managed') != 'true' or labels.get('org.mrstore_webhost.slug', slug) != slug:
+    if labels.get('org.mrstore_webhost.managed') != 'true' or labels.get('org.mrstore_webhost.slug') != slug:
         raise RuntimeError('Ja existe um contentor com esse nome que nao pertence ao WebHost.')
     return info
 
@@ -166,7 +173,7 @@ def run_builder(slug, release, script, timeout):
            'node:22-alpine', 'sh', '-lc', script, timeout=timeout)
 
 
-def site_run_args(site, release, name):
+def site_run_args(site, release, name, published=True):
     slug, kind = site['slug'], site['kind']
     host_path = f'{HOST_DATA_DIR}/sites/{slug}/releases/{release}'
     source_path = SITES / slug / 'releases' / release
@@ -178,24 +185,28 @@ def site_run_args(site, release, name):
     else:
         docroot = host_path
     args = ['run', '-d', '--name', name, '--label', 'org.mrstore_webhost.managed=true',
-            '--label', f'org.mrstore_webhost.slug={slug}', '--restart', 'unless-stopped',
+            '--label', f'org.mrstore_webhost.slug={slug}',
+            '--label', f'org.mrstore_webhost.release={release}', '--restart', 'unless-stopped',
             '--security-opt', 'no-new-privileges:true', '--memory', '512m', '--pids-limit', '128']
     if kind != 'php':
         args += ['--cap-drop', 'ALL']
     if kind in ('html', 'react'):
         conf = f'{HOST_DATA_DIR}/config/nginx-{kind}.conf'
-        args += ['-p', f"{site['port']}:8080", '--mount',
+        args += (['-p', f"{SITE_BIND_IP}:{site['port']}:8080"] if published else [])
+        args += ['--mount',
                  f'type=bind,source={docroot},target=/usr/share/nginx/html,readonly',
                  '--mount', f'type=bind,source={conf},target=/etc/nginx/conf.d/default.conf,readonly',
                  'nginxinc/nginx-unprivileged:stable-alpine']
     elif kind == 'php':
         conf = f'{HOST_DATA_DIR}/config/apache-security.conf'
-        args += ['-p', f"{site['port']}:80", '--mount',
+        args += (['-p', f"{SITE_BIND_IP}:{site['port']}:80"] if published else [])
+        args += ['--mount',
                  f'type=bind,source={docroot},target=/var/www/html,readonly',
                  '--mount', f'type=bind,source={conf},target=/etc/apache2/conf-enabled/mrstore_webhost-security.conf,readonly',
                  'php:8.3-apache']
     else:
-        args += ['-p', f"{site['port']}:3000", '--user', '1000:1000', '-e', 'PORT=3000',
+        args += (['-p', f"{SITE_BIND_IP}:{site['port']}:3000"] if published else [])
+        args += ['--user', '1000:1000', '-e', 'PORT=3000',
                  '-e', 'HOST=0.0.0.0', '-e', 'NODE_ENV=production', '-w', '/app',
                  '--mount', f'type=bind,source={docroot},target=/app,readonly',
                  'node:22-alpine', 'npm', 'start']
@@ -211,19 +222,135 @@ def cleanup_old_releases(slug, keep):
             shutil.rmtree(child, ignore_errors=True)
 
 
+def append_event(slug, event, detail=''):
+    """Bounded admin-only deployment journal; not a substitute for host log rotation."""
+    log = ROOT / 'events.jsonl'
+    event_data = {'at': int(time.time()), 'site': slug, 'event': event, 'detail': str(detail)[-350:]}
+    with LOCK:
+        if log.exists() and log.stat().st_size > 2 * 1024 * 1024:
+            with log.open('rb') as old:
+                old.seek(max(0, log.stat().st_size - 1024 * 1024))
+                old.readline()
+                tail = old.read()
+            log.write_bytes(tail)
+        with log.open('a', encoding='utf-8') as out:
+            out.write(json.dumps(event_data, ensure_ascii=False) + '\n')
+
+
+def recent_events(slug, limit=15):
+    log = ROOT / 'events.jsonl'
+    if not log.is_file():
+        return []
+    # Read a small, capped tail to avoid loading an unbounded log into memory.
+    with log.open('rb') as file:
+        file.seek(0, os.SEEK_END)
+        size = file.tell()
+        file.seek(max(0, size - 65536))
+        if size > 65536:
+            file.readline()
+        tail = file.readlines()
+    output = []
+    for line in tail[-200:]:
+        try:
+            event = json.loads(line)
+            if event.get('site') == slug:
+                output.append(event)
+        except (ValueError, UnicodeDecodeError):
+            continue
+    return output[-limit:]
+
+
+def probe_command(kind, name):
+    """Request the application's actual HTTP endpoint inside its own network namespace."""
+    port = 8080 if kind in ('html', 'react') else 80 if kind == 'php' else 3000
+    url = f'http://127.0.0.1:{port}/'
+    if kind in ('html', 'react'):
+        return ('exec', name, 'wget', '-q', '-T', '3', '-O', '/dev/null', url)
+    if kind == 'php':
+        script = ("$context=stream_context_create(['http'=>['timeout'=>3,'ignore_errors'=>true]]);"
+                  f"$body=@file_get_contents('{url}',false,$context);"
+                  "if ($body===false || empty($http_response_header) || "
+                  r"!preg_match('/^HTTP\/\S+ [23]\d\d\b/', $http_response_header[0])) exit(1);")
+        return ('exec', name, 'php', '-r', script)
+    # Node's built-in HTTP client avoids assuming curl/wget is installed in the image.
+    js = ("const http=require('node:http'); "
+          f"let req=http.get('{url}',r=>{{r.resume();process.exit(r.statusCode>=200&&r.statusCode<400?0:1)}});"
+          "req.setTimeout(3000,()=>req.destroy());req.on('error',()=>process.exit(1));")
+    return ('exec', name, 'node', '-e', js)
+
+
+def check_http_ready(kind, name, attempts=None, pause=1):
+    attempts = HEALTH_ATTEMPTS if attempts is None else attempts
+    for i in range(attempts):
+        running = docker('inspect', '-f', '{{.State.Running}}', name, timeout=10, check=False)
+        if running.returncode or running.stdout.strip().lower() != 'true':
+            raise RuntimeError('O contentor terminou durante a verificacao HTTP.')
+        check = docker(*probe_command(kind, name), timeout=8, check=False)
+        if check.returncode == 0:
+            return
+        if i < attempts - 1:
+            time.sleep(pause)
+    raise RuntimeError(f'O website nao respondeu corretamente por HTTP apos {attempts} tentativas.')
+
+
+def recover_interrupted_deployments():
+    """Restore the previous container when an interrupted deployment has no DB commit."""
+    with LOCK:
+        pending = [dict(x) for x in load_db().values() if x.get('pending_release')]
+    for site in pending:
+        slug, name = site['slug'], container_name(site['slug'])
+        next_name, prev_name = name + '-next', name + '-prev'
+        try:
+            new_release = site['pending_release']
+            committed = site.get('active_release') == new_release
+            if inspect_managed(next_name, slug):
+                docker('rm', '-f', next_name)
+            if committed:
+                if not inspect_container(slug):
+                    raise RuntimeError('Publicacao confirmada, mas o contentor ativo desapareceu.')
+                if inspect_managed(prev_name, slug):
+                    docker('rm', '-f', prev_name)
+            else:
+                live = inspect_container(slug)
+                if live and live.get('Config', {}).get('Labels', {}).get('org.mrstore_webhost.release') == new_release:
+                    docker('rm', '-f', name)
+                if inspect_managed(prev_name, slug):
+                    if inspect_container(slug):
+                        docker('rm', '-f', name)
+                    docker('rename', prev_name, name)
+                if site.get('pending_was_running'):
+                    restored = inspect_container(slug)
+                    if not restored:
+                        raise RuntimeError('O contentor anterior nao foi encontrado para recuperar.')
+                    if not restored.get('State', {}).get('Running'):
+                        docker('start', name)
+            with LOCK:
+                db = load_db()
+                if slug in db:
+                    db[slug].pop('pending_release', None)
+                    db[slug].pop('pending_was_running', None)
+                    if not committed:
+                        db[slug]['last_error'] = 'Publicacao interrompida; recuperada no arranque do painel.'
+                    save_db(db)
+            append_event(slug, 'recuperacao', 'Commit mantido' if committed else 'Versao anterior restaurada')
+        except Exception as exc:
+            append_event(slug, 'erro_recuperacao', str(exc))
+            print('ERRO ao recuperar', slug, str(exc), flush=True)
+
+
 def deploy_site(slug):
     new_release = f'{int(time.time())}-{secrets.token_hex(5)}'
     new_path = SITES / slug / 'releases' / new_release
-    old = None
-    was_running = False
-    stopped_old = False
-    candidate_name = container_name(slug) + '-next'
-    started_candidate = False
-    promoted = False
-    success = False
+    name = container_name(slug)
+    candidate_name, preview_name, previous_name = name + '-next', name + '-probe', name + '-prev'
+    old_exists = old_running = old_renamed = promoted = committed = False
+    old_release = None
+    site = None
     try:
         with LOCK:
             site = load_db()[slug]
+        if site.get('pending_release'):
+            raise RuntimeError('Existe uma publicacao interrompida; reinicia o painel para recuperar.')
         kind = site['kind']
         source = SITES / slug / 'source'
         if not source.is_dir() or not any(source.iterdir()):
@@ -248,74 +375,101 @@ def deploy_site(slug):
             install = 'if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi'
             run_builder(slug, new_release, install + (' && npm run build' if kind == 'react' else ''),
                         900 if kind == 'react' else 600)
-        # Make sure a broken build does not stop the currently published container.
         site_run_args(site, new_release, candidate_name)
+        append_event(slug, 'preparada', new_release)
         with LOCK:
-            JOBS[slug] = 'a publicar'
+            JOBS[slug] = 'a verificar HTTP'
+        if inspect_managed(previous_name, slug):
+            raise RuntimeError('Ha uma versao anterior por recuperar. Reinicia o painel primeiro.')
+        if inspect_managed(preview_name, slug):
+            docker('rm', '-f', preview_name)
+        docker(*site_run_args(site, new_release, preview_name, published=False), timeout=240)
+        check_http_ready(kind, preview_name)
+        docker('rm', '-f', preview_name)
+        append_event(slug, 'http_preflight_ok')
         old = inspect_container(slug)
-        was_running = bool(old and old.get('State', {}).get('Running'))
+        old_exists = bool(old)
+        old_running = bool(old and old.get('State', {}).get('Running'))
+        old_release = site.get('active_release')
+        with LOCK:
+            db = load_db()
+            db[slug]['pending_release'] = new_release
+            db[slug]['pending_was_running'] = old_running
+            save_db(db)
+            JOBS[slug] = 'a publicar'
         if inspect_managed(candidate_name, slug):
             docker('rm', '-f', candidate_name)
-        if was_running:
-            stopped_old = True
-            docker('stop', container_name(slug), timeout=35)
-        # The old container remains available for rollback until the new one is up.
+        if old_running:
+            docker('stop', name, timeout=35)
         docker(*site_run_args(site, new_release, candidate_name), timeout=240)
-        started_candidate = True
-        # A running container is only a basic smoke test, not an HTTP health check.
-        status = docker('inspect', '-f', '{{.State.Running}}', candidate_name, timeout=20)
-        if status.stdout.strip().lower() != 'true':
-            raise RuntimeError('O contentor novo terminou logo apos iniciar. Verifica os logs Docker.')
-        if old:
-            docker('rm', '-f', container_name(slug))
-        docker('rename', candidate_name, container_name(slug))
-        started_candidate = False
+        check_http_ready(kind, candidate_name)
+        if old_exists:
+            docker('rename', name, previous_name)
+            old_renamed = True
+        docker('rename', candidate_name, name)
         promoted = True
+        # Persist the new active release before removing the old rollback container.
         with LOCK:
             db = load_db()
-            if slug in db:
-                previous_release = db[slug].get('active_release')
-                db[slug]['previous_release'] = previous_release
-                db[slug]['active_release'] = new_release
-                db[slug]['last_error'] = ''
-                db[slug]['deployed_at'] = int(time.time())
-                save_db(db)
-        success = True
-        for backup in (SITES / slug).glob('backup-*'):
-            if backup.is_dir():
-                shutil.rmtree(backup, ignore_errors=True)
-        # Keep one prior successful release for recovery.
+            db[slug]['previous_release'] = old_release
+            db[slug]['active_release'] = new_release
+            db[slug]['last_error'] = ''
+            db[slug]['deployed_at'] = int(time.time())
+            save_db(db)
+        committed = True
+        append_event(slug, 'publicada', new_release)
+        # Post-commit cleanup failures must never accidentally roll back a healthy site.
         try:
-            cleanup_old_releases(slug, {new_release, previous_release} if previous_release else {new_release})
-        except OSError:
-            pass  # Never roll back a successful deploy because housekeeping failed.
+            if inspect_managed(previous_name, slug):
+                docker('rm', '-f', previous_name)
+            cleanup_old_releases(slug, {new_release, old_release} if old_release else {new_release})
+            with LOCK:
+                db = load_db()
+                db[slug].pop('pending_release', None)
+                db[slug].pop('pending_was_running', None)
+                save_db(db)
+        except Exception as cleanup_exc:
+            append_event(slug, 'aviso_limpeza', str(cleanup_exc))
     except Exception as exc:
-        err = str(exc)[-3000:]
+        err = str(exc)[-2600:]
         try:
-            if not promoted and (started_candidate or inspect_managed(candidate_name, slug)):
-                docker('rm', '-f', candidate_name, timeout=30)
-            if stopped_old and not promoted:
-                # If the old container still exists, bring it back online.
-                if inspect_container(slug):
-                    docker('start', container_name(slug), timeout=45)
-                else:
-                    # Last-resort recovery when failure occurs after old removal.
-                    old_release = site.get('active_release')
-                    if old_release and (SITES / slug / 'releases' / old_release).exists():
-                        docker(*site_run_args(site, old_release, container_name(slug)), timeout=240)
-        except Exception as recovery_error:
-            err += ' | Recuperacao automatica falhou: ' + str(recovery_error)[-1000:]
-        with LOCK:
-            db = load_db()
-            if slug in db:
-                db[slug]['last_error'] = err
-                save_db(db)
+            if inspect_managed(preview_name, slug):
+                docker('rm', '-f', preview_name)
+            if not committed:
+                if promoted:
+                    docker('rm', '-f', name)
+                elif inspect_managed(candidate_name, slug):
+                    docker('rm', '-f', candidate_name)
+                if old_renamed and inspect_managed(previous_name, slug):
+                    docker('rename', previous_name, name)
+                if old_running and inspect_container(slug) and not inspect_container(slug).get('State', {}).get('Running'):
+                    docker('start', name, timeout=45)
+        except Exception as recover_error:
+            err += ' | Falha ao restaurar versao anterior: ' + str(recover_error)[-800:]
+        try:
+            with LOCK:
+                db = load_db()
+                if slug in db:
+                    db[slug]['last_error'] = err
+                    if not committed:
+                        # Only clear the journal if previous container restoration was successful.
+                        if not old_running or (inspect_container(slug) and inspect_container(slug).get('State', {}).get('Running')):
+                            db[slug].pop('pending_release', None)
+                            db[slug].pop('pending_was_running', None)
+                    save_db(db)
+        except Exception as db_error:
+            append_event(slug, 'erro_persistencia', str(db_error))
+        append_event(slug, 'falha_publicacao', err)
     finally:
-        if not success and not promoted:
-            shutil.rmtree(new_path, ignore_errors=True)
+        try:
+            if not committed:
+                shutil.rmtree(new_path, ignore_errors=True)
+            if inspect_managed(preview_name, slug):
+                docker('rm', '-f', preview_name)
+        except Exception:
+            pass
         with LOCK:
             JOBS.pop(slug, None)
-
 
 def safe_source_path(slug, relative):
     if not isinstance(relative, str) or len(relative) > 240 or not relative or '\\' in relative or '\x00' in relative:
@@ -397,7 +551,7 @@ def unzip_safely(data, destination):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = 'MrStore_webhost/0.2'
+    server_version = 'MrStore_webhost/0.3'
 
     def log_message(self, fmt, *args):
         print(f'{self.address_string()} - {fmt % args}', flush=True)
@@ -515,9 +669,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.problem('Website nao encontrado.', 404)
             try:
                 if not inspect_container(slug):
-                    return self.send_json({'logs': 'O website ainda nao foi publicado.'})
+                    return self.send_json({'logs': 'O website ainda nao foi publicado.', 'events': recent_events(slug)})
                 proc = docker('logs', '--tail', '100', container_name(slug), timeout=15, check=False)
-                return self.send_json({'logs': (proc.stdout + proc.stderr)[-12000:]})
+                return self.send_json({'logs': (proc.stdout + proc.stderr)[-12000:], 'events': recent_events(slug)})
             except Exception as e:
                 return self.problem(e, 500)
         return self.problem('Caminho nao encontrado.', 404)
@@ -708,5 +862,6 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == '__main__':
     init()
+    recover_interrupted_deployments()
     print(f'MrStore_webhost a funcionar na porta {PORT}', flush=True)
     ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
