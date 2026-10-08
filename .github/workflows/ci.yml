@@ -28,7 +28,7 @@ jobs:
           fi
       - name: Python and JavaScript syntax
         run: |
-          python -m py_compile app/server.py
+          python -m py_compile app/server.py scripts/integration_smoke.py
           node --check examples/node/server.js
           python - <<'PY'
           from pathlib import Path
