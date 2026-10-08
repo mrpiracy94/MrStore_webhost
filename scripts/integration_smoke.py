@@ -78,7 +78,7 @@ def wait_for_rootless(sock_dir, seconds=100):
                     check=False)
     raise RuntimeError('Docker rootless de teste nao iniciou/nao passou validacao de seguranca. '
                        + ' state=' + state.stdout[-120:] + ' nested=' + (nested.stdout or nested.stderr)[-1800:]
-                       + ' logs=' + (report.stdout or report.stderr)[-1800:])
+                       + ' logs=' + (report.stdout or report.stderr)[-20000:])
 
 
 def run_tests():
