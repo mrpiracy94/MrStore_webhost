@@ -68,9 +68,14 @@ def wait_for_rootless(sock_dir, seconds=100):
         except (subprocess.SubprocessError, ValueError, OSError):
             pass
         time.sleep(2)
-    report = docker('logs', '--tail', '100', ENGINE_NAME, check=False)\n    state = docker('inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', ENGINE_NAME, check=False)\n    nested = docker('exec', ENGINE_NAME, 'sh', '-lc',\n                    'docker info --format \"{{json .SecurityOptions}}\" 2>&1; ls -la /run/user/1000; ps aux | tail -15',\n                    check=False)
+    report = docker('logs', '--tail', '100', ENGINE_NAME, check=False)
+    state = docker('inspect', '--format', '{{.State.Status}} {{.State.ExitCode}}', ENGINE_NAME, check=False)
+    nested = docker('exec', ENGINE_NAME, 'sh', '-lc',
+                    'docker info --format \"{{json .SecurityOptions}}\" 2>&1; ls -la /run/user/1000; ps aux | tail -15',
+                    check=False)
     raise RuntimeError('Docker rootless de teste nao iniciou/nao passou validacao de seguranca. '
-                       + ' state=' + state.stdout[-120:] + ' nested=' + (nested.stdout or nested.stderr)[-1800:]\n                       + ' logs=' + (report.stdout or report.stderr)[-1800:])
+                       + ' state=' + state.stdout[-120:] + ' nested=' + (nested.stdout or nested.stderr)[-1800:]
+                       + ' logs=' + (report.stdout or report.stderr)[-1800:])
 
 
 def run_tests():
@@ -85,7 +90,8 @@ def run_tests():
     subprocess.run(['sudo', '-n', 'chown', '1000:1000', sock_dir], check=True)
     subprocess.run(['sudo', '-n', 'chmod', '700', sock_dir], check=True)
     try:
-        docker('run', '-d', '--privileged', '--name', ENGINE_NAME,\n               '-e', 'DOCKER_TLS_CERTDIR=',
+        docker('run', '-d', '--privileged', '--name', ENGINE_NAME,
+               '-e', 'DOCKER_TLS_CERTDIR=',
                '-v', f'{folder}:{folder}',
                '-v', f'{sock_dir}:/run/user/1000',
                '-p', '127.0.0.1:9101:9101', '-p', '127.0.0.1:9102:9102',
