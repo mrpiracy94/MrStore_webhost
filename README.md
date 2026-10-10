@@ -1,6 +1,6 @@
 # MrStore_webhost v0.3 — Alojamento web para ZimaOS
 
-Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em contentores Docker independentes. Código disponível neste **repositório independente** (`mrpiracy94/MrStore_webhost`), sem dependências da MrStore.
+Painel em português para publicar **HTML, PHP, React/Vite e Node.js** em contentores Docker independentes. O painel inclui uma ligação direta para o **catálogo completo de aplicações MrStore** em https://mrpiracy94.github.io/MrStore/, sem copiar ou filtrar a listagem. Continua a ser um gestor de websites e não um instalador universal de apps Docker.
 
 > **Estado: versão experimental para uso numa LAN de confiança.** A execução em ZimaOS físico ainda não está validada. O acesso a `/var/run/docker.sock` concede privilégios administrativos sobre o host; **não exponhas o painel diretamente à Internet.**
 

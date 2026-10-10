@@ -288,6 +288,8 @@ class TestHTTP(unittest.TestCase):
         self.assertEqual(response.status, 200)
         self.assertIn('filesOverlay', body)
         self.assertIn('MrStore_webhost', body)
+        self.assertIn('href="https://mrpiracy94.github.io/MrStore/"', body)
+        self.assertIn('Catálogo de apps', body)
         self.assertIn("X-MrStore_webhost-Request", body)
         con.close()
 
