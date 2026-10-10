@@ -105,6 +105,18 @@ def run_tests():
                 for suffix in ('-probe', '-next', '-prev'):
                     docker('rm', '-f', 'zwh-ci-' + kind + suffix, check=False)
             docker('rm', '-f', PANEL_NAME, check=False)
+            # Website build images can write root-owned files into bind mounts.
+            # Reclaim only this temporary CI directory using our existing local
+            # test image, without mounting the Docker socket into the helper.
+            permissions = docker(
+                'run', '--rm', '--user', '0:0',
+                '-v', f'{folder}:/cleanup', '--entrypoint', 'sh',
+                'mrstore_webhost:ci', '-c', 'chmod -R a+rwX /cleanup',
+                check=False,
+            )
+            if permissions.returncode:
+                print('Warning: cannot restore CI temporary directory permissions:',
+                      permissions.stderr, flush=True)
 
 
 if __name__ == '__main__':
